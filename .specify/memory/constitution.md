@@ -2,7 +2,7 @@
 Sync Impact Report
 - Version change: 1.0.0 → 1.1.0
 - Modified sections:
-  - Phased Rollout Strategy: added Phase 2.2 sub-phase
+  - Phased Rollout Strategy: Phase 2.2 analysis plots now require all channels/feature dimensions on shared axes (not stereo L/R only)
 - Added sections: None
 - Removed sections: None
 - Deferred TODOs: None
@@ -88,10 +88,10 @@ The UI is the primary gatekeeper against illegal operations and legal liability:
 **Phase 2.2: "Signal Analysis & Expressive Input Controls"**
 - Goal: Extend the embedded graph builder with per-element analysis views and richer parameter input modalities beyond inline text fields.
 - Features:
-  - **Per-Element Visualization Graphs**: Each element MUST expose analysis views showing the cumulative sound transformation up to that point in the graph (e.g., transfer function, frequency response, and related analysis plots). Left and right channels MUST be displayed on the same plots for direct comparison.
+  - **Per-Element Visualization Graphs**: Each element MUST expose analysis views showing the cumulative sound transformation up to that point in the graph (e.g., transfer function, frequency response, phase response, and related analysis plots). **All channels or feature dimensions** at the analysis point MUST be displayed on the same plots with distinguishable styling — stereo left/right is the common audio case, but latent or high-dimensional feature spaces (any channel count) MUST be supported equally.
   - **Activation & TCN Gain Control**: Activation-function and TCN elements MUST expose a gain parameter that controls the slope of the nonlinearity, enabling real-time shaping of transfer-characteristic steepness.
-  - **Knob Inputs**: Parameter editing MUST support rotary knob controls as an alternative to text inputs for continuous parameters.
-  - **XY Trackpad**: Parameter editing MUST support an XY trackpad input for two-axis simultaneous control of paired parameters.
+  - **Knob Inputs**: Knob Input MUST be a graph source element (like Audio Input) supplying runtime conditioning signals, combinable via Merge and connectable to processing element inputs.
+  - **XY Trackpad**: XY Trackpad MUST be a graph source element supplying two-axis runtime conditioning (e.g., c0/c1), combinable via Merge and connectable to processing element inputs.
 
 **Phase 3: "Steerable Discovery & Training"**
 - Goal: Enable training of conditional models.
@@ -139,4 +139,4 @@ This constitution serves as the single source of truth for all technical decisio
 3. Blue = Live (glitchable, randomizable). Gold = Frozen (optimized, stable).
 4. Zero audio-thread allocations. All graph modifications prepared on GUI thread and swapped atomically.
 
-**Version**: 1.1.0 | **Ratified**: 2026-08-19 | **Last Amended**: 2026-08-19
+**Version**: 1.2.0 | **Ratified**: 2026-08-19 | **Last Amended**: 2026-08-19

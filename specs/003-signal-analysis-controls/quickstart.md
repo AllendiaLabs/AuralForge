@@ -2,15 +2,14 @@
 
 ## Purpose
 
-Validate Phase 2.2 end to end in the existing AuralForge plug-in/editor workflow.
+Validate Phase 2.2 end to end in the AuralForge plug-in editor.
 
 ## Prerequisites
 
-- Project dependencies installed via CMake, including JUCE, LibTorch, Dear ImGui, and Python 3
-- A build directory configured for the current platform
-- Existing Phase 2 graph editor functional
+- CMake build with JUCE, LibTorch, Dear ImGui, Python 3
+- Phase 2 graph editor functional (element menu, Merge, inline properties, freeze)
 
-## Build
+## Build & Test
 
 ```bash
 cmake -S . -B build
@@ -20,83 +19,91 @@ ctest --test-dir build --output-on-failure
 
 ## Validation Scenarios
 
-### 1. Live-node cumulative analysis
+### 1. Dual chain/element analysis (stereo)
 
-1. Launch the plug-in editor.
-2. Build a simple graph such as `Audio In -> Activation -> Audio Out`.
-3. Select the Activation node and open its analysis panel.
-4. Confirm the transfer, frequency, and phase views are available.
-5. Confirm left and right channels are shown on the same plot.
+1. Build `Audio In → Activation → Audio Out`.
+2. Select Activation; open analysis panel.
+3. Switch transfer, frequency, and phase views.
 
-Expected outcome:
-- Analysis opens within the selected node workflow.
-- Cumulative plots reflect the selected node's upstream signal path.
-- Stereo traces are visually distinct on shared axes.
+**Expected**
+- Each view shows **chain** and **element-only** curve families.
+- Two traces per family (stereo L/R) on shared axes with legend.
+- Transfer curves visible while stopped.
+- During playback: marker on **chain** transfer curve, lying on the line.
 
-### 2. Probe fallback during silence or disconnected input
+### 2. Multi-channel / latent path
 
-1. Leave the graph connected but provide no suitable live input, or select a node with no usable upstream signal.
-2. Open the analysis panel.
+1. Build a graph with Conv1D or TCN using channels > 2 (e.g., 8 or 32).
+2. Open analysis on that node.
 
-Expected outcome:
-- Analysis still renders using the fallback probe path.
-- The UI indicates probe-driven behavior rather than appearing broken or empty.
+**Expected**
+- One trace per channel/feature dimension per family (not hard-coded to stereo).
+- Legend identifies dimensions; plot remains readable.
 
-### 3. Gain control on Activation and TCN
+### 3. Probe fallback
 
-1. Add an Activation node and a TCN node in separate validation runs.
-2. Edit the `Gain` property on each while audio is running.
-3. Re-open or watch the transfer-function view as Gain changes.
+1. Open analysis with silent or disconnected upstream path.
 
-Expected outcome:
-- Audio character changes immediately.
-- Transfer curves visibly steepen or flatten with Gain changes.
-- No audible glitch or editor freeze occurs.
+**Expected**
+- Static curves still render (probe-driven).
+- UI indicates probe fallback status.
 
-### 4. Knob-mode parameter editing
+### 4. Gain on Activation and TCN
 
-1. Choose a node with continuous editable properties.
-2. Switch one supported property from text input to knob mode.
-3. Drag the knob through multiple values, including boundary values.
+1. Edit **Gain** inline on Activation, then TCN, during playback.
+2. Observe transfer view (element-only and chain).
 
-Expected outcome:
-- The current numeric value remains visible.
-- Property values respect bounds and step constraints.
-- Runtime audio updates track the knob without interruption.
+**Expected**
+- Immediate audible change; transfer curves update.
+- No glitches or editor freeze.
 
-### 5. XY trackpad paired control
+### 5. Knob Input conditioning
 
-1. Configure an XY binding on one node using two supported continuous parameters.
-2. Move the XY pointer through corners and center positions.
-3. Observe the bound parameter values and audio output.
+1. Add **Knob Input** from element menu.
+2. Wire to Merge alongside Audio In → Merge → TCN → Audio Out (also test direct Knob → element).
+3. Rotate knob during playback.
 
-Expected outcome:
-- Both parameters change together in real time.
-- The current X- and Y-bound values are visible.
-- The binding remains attached to the chosen node and parameters.
+**Expected**
+- Audio character changes; inline TCN parameters unchanged.
+- Value readout updates on Knob node.
 
-### 6. Gold-node analysis parity
+### 6. XY Trackpad conditioning
 
-1. Freeze a valid Blue-node chain into a Gold BlackBox.
-2. Select the resulting Gold node.
-3. Open the analysis panel and cycle through all analysis views.
+1. Add **XY Trackpad**; wire X/Y to Merge or directly to inputs.
+2. Move pointer through pad extremes.
 
-Expected outcome:
-- Gold nodes expose the same analysis entry points as Blue nodes.
-- Cumulative plots reflect compiled behavior at the BlackBox boundary.
-- No unfreeze is required to inspect the frozen result.
+**Expected**
+- Both X/Y readouts update; audio responds in real time.
+- Inline architectural params on targets unchanged.
 
-### 7. State recall
+### 7. Merge audio + conditioning
 
-1. Configure gain, knob mode, XY binding, and analysis view preferences.
-2. Save plug-in state and reload it.
+1. Audio In + Knob + XY → Merge → TCN → Audio Out.
+2. Adjust knob and trackpad while playing.
 
-Expected outcome:
-- Graph topology and existing randomization state still restore correctly.
-- Gain values, knob modes, XY bindings, and selected analysis views restore correctly.
+**Expected**
+- Combined conditioning affects output; Merge modes (add/multiply) behave per spec.
+- With no conditioning cables: neutral c = 0 baseline.
+
+### 8. Gold-node analysis parity
+
+1. Freeze a valid chain to Gold BlackBox.
+2. Open analysis on Gold node; cycle all views.
+
+**Expected**
+- Same chain/element-only views as Blue nodes at compiled boundary.
+
+### 9. State recall
+
+1. Build graph with Knob, XY, Merge routing, Gain edits, analysis view preference.
+2. Save and reload plug-in state.
+
+**Expected**
+- Topology, conditioning values, Gain, and cable routing restore correctly.
 
 ## Related Artifacts
 
-- Data model: `specs/003-signal-analysis-controls/data-model.md`
-- Analysis/runtime contract: `specs/003-signal-analysis-controls/contracts/analysis-runtime-contract.md`
-- UI interaction contract: `specs/003-signal-analysis-controls/contracts/graph-control-ui-contract.md`
+- `data-model.md`
+- `contracts/analysis-runtime-contract.md`
+- `contracts/graph-control-ui-contract.md`
+- `plan.md`, `tasks.md`

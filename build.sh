@@ -49,5 +49,5 @@ cmake -S . -B "$BUILD_DIR" \
 cmake --build "$BUILD_DIR" --parallel "$(sysctl -n hw.logicalcpu 2>/dev/null || nproc)"
 
 if [[ "${LAUNCH_ABLETON}" == true ]]; then
-    open -a "Ableton Live"
+    open "/Applications/Ableton Live 12 Suite.app"
 fi

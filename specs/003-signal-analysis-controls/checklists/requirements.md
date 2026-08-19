@@ -31,7 +31,8 @@
 
 ## Notes
 
-- All items passed validation on first iteration.
+- Analysis views: dual chain/element-only curves; N-channel/feature traces; transfer live marker; static frequency (dB) and phase (degrees) plots documented 2026-08-19.
 - Gain default range (0.1–10.0, neutral 1.0) documented in Assumptions — can be refined during planning if ML Forge reference differs.
-- Phase 2 (`002-embedded-builder-graph`) is a hard dependency; analysis and input controls extend its inline parameter model.
-- Constitution Phase 2.2 mandates L/R on same plots and gain-as-slope — both captured in FR-004, FR-006, FR-007.
+- Phase 2 (`002-embedded-builder-graph`) is a hard dependency; analysis and Merge-extended routing extend its graph connection model.
+- Constitution Phase 2.2 mandates all channels/feature dimensions on shared analysis plots and gain-as-slope — captured in FR-004, FR-006, FR-007.
+- Merge behavior when mixing audio and conditioning tensors deferred to planning (documented as open edge case).

@@ -6,39 +6,39 @@
 
 ## Summary
 
-Add Phase 2.2 graph-inspection and expressive-control features to the existing JUCE + Dear ImGui plug-in editor: per-element cumulative analysis views, gain-as-slope controls for Activation and TCN nodes, rotary knob editing for continuous properties, and per-element XY control for paired parameters. The design extends the current `NodeGraph`/`NodeRenderer` document-renderer split, keeps all heavy analysis work off the audio thread, and preserves freeze/unfreeze parity so Gold BlackBox nodes expose the same analysis views as live Blue nodes.
+Extend the existing JUCE + Dear ImGui plug-in with Phase 2.2 capabilities: per-element analysis views (transfer, frequency, phase) showing **chain** and **element-only** response families for **all channel/feature dimensions**; inline **Gain** on Activation and TCN nodes; and new graph source elements **Knob Input** and **XY Trackpad** supplying runtime conditioning **c** (steerable NAfx g(x, c) model), routable directly or — primarily — through **Merge** alongside audio **x**. Heavy analysis stays off the audio thread; Gold BlackBox nodes retain analysis parity with Blue live nodes.
 
 ## Technical Context
 
-**Language/Version**: C++17 for plug-in/runtime code, Python 3 for the existing embedded freeze worker
+**Language/Version**: C++17 for plug-in/runtime code, Python 3 for the embedded freeze worker
 
 **Primary Dependencies**: JUCE 9, Dear ImGui, `imgui-node-editor`, LibTorch, embedded Python worker for freeze compilation
 
-**Storage**: JUCE `ValueTree` plug-in state for graph document, viewport, seeds, and new control/analysis preferences; local TorchScript artifact files for frozen nodes
+**Storage**: JUCE `ValueTree` graph document for topology, node properties, viewport, seeds, conditioning element state (Knob/XY values, positions), and per-node analysis view preferences; local TorchScript artifacts for frozen nodes
 
-**Testing**: CTest-driven JUCE console apps (`AuralForgeProcessorTests`, `AuralForgeLiveGraphTests`, `AuralForgeTests`) plus Python freeze-worker tests
+**Testing**: CTest console apps (`AuralForgeProcessorTests`, `AuralForgeLiveGraphTests`, `AuralForgeTests`) plus Python freeze-worker tests
 
-**Target Platform**: Desktop audio plug-in on macOS first, building AU/VST3 via CMake
+**Target Platform**: Desktop audio plug-in on macOS first (AU/VST3 via CMake)
 
-**Project Type**: Single desktop audio plug-in project with embedded worker and native tests
+**Project Type**: Single desktop audio plug-in with embedded worker and native tests
 
-**Performance Goals**: 60 FPS UI responsiveness during audio processing, frozen latency under 5 ms at 256-sample buffers, live latency under 7 ms, zero audible glitches during interactive control updates
+**Performance Goals**: 60 FPS UI during audio processing; frozen latency < 5 ms and live latency < 7 ms at 256-sample buffers; static analysis refresh < 500 ms perceived latency; zero audible glitches on Gain/Knob/XY/Merge edits
 
-**Constraints**: No standalone app, no audio-thread allocations, no audio-thread blocking, analysis and UI updates must not interfere with real-time processing, Phase 2.2 must extend the Phase 2 graph/editor model instead of replacing it
+**Constraints**: No standalone app; zero audio-thread allocations; no audio-thread blocking; extend Phase 2 graph model (no replacement); Knob/XY excluded from freeze subgraph compilation
 
-**Scale/Scope**: One plug-in editor surface, one graph document, 10s of nodes per session, stereo plots for each analysis view, multiple interactive control modes per editable node
+**Scale/Scope**: One editor surface; tens of nodes per session; analysis plots up to full channel count at selected tensor shape (mono through 64+ latent features); three analysis views × two curve families × N dimensions
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-- `Single Interface, Decoupled Compute`: PASS. All Phase 2.2 capabilities stay inside the existing plug-in editor; no external tooling is introduced.
-- `Dual-Engine Execution Model`: PASS. Blue live nodes and Gold frozen nodes remain first-class runtime modes, and the plan preserves analysis parity across both.
-- `Manual Granular Freeze Policy`: PASS. Phase 2.2 does not alter freeze initiation or policy; it only adds analysis and control surfaces around existing nodes.
-- `Shape Integrity & Legal Constraints`: PASS. No design weakens connection validation or legal acknowledgment flows.
-- `Zero Audio Allocations / Non-Blocking Audio Thread`: PASS with design guardrail. Analysis computation, plot generation, and control-state persistence must occur on message/background threads with snapshot handoff into the audio runtime.
+- `Single Interface, Decoupled Compute`: PASS. All capabilities remain inside the plug-in editor.
+- `Dual-Engine Execution Model`: PASS. Analysis parity for Blue and Gold preserved.
+- `Manual Granular Freeze Policy`: PASS. Freeze policy unchanged; conditioning UI nodes excluded from compiled subgraphs.
+- `Shape Integrity & Legal Constraints`: PASS. Port-type validation extended for conditioning vs audio; existing shape gates retained.
+- `Zero Audio Allocations / Non-Blocking Audio Thread`: PASS. Analysis, plot generation, and conditioning state commits occur on message/background threads with atomic runtime handoff.
 
-**Post-Design Re-Check**: PASS. Planned artifacts keep runtime/UI separation explicit, store new preferences in graph state, and avoid any constitution violations requiring justification.
+**Post-Design Re-Check**: PASS. Design keeps runtime/UI separation, persists conditioning elements in graph state, and documents Merge + dual-curve analysis without constitution violations.
 
 ## Project Structure
 
@@ -59,67 +59,47 @@ specs/003-signal-analysis-controls/
 ### Source Code (repository root)
 
 ```text
-AuralForge/
-└── Source/
-    ├── PluginEditor.cpp
-    ├── PluginEditor.h
-    ├── PluginProcessor.cpp
-    ├── PluginProcessor.h
-    ├── dsp/
-    │   ├── LiveGraphEngine.cpp
-    │   ├── LiveGraphEngine.h
-    │   ├── LiveGraphPublisher.cpp
-    │   ├── LiveGraphPublisher.h
-    │   ├── LookbackBuffer.cpp
-    │   ├── LookbackBuffer.h
-    │   ├── TCNModel.cpp
-    │   ├── TCNModel.h
-    │   ├── TorchScriptBlackBox.cpp
-    │   ├── TorchScriptBlackBox.h
-    │   ├── WeightRandomizer.cpp
-    │   └── WeightRandomizer.h
-    ├── freeze/
-    │   ├── FreezeCoordinator.cpp
-    │   └── FreezeCoordinator.h
-    ├── graph/
-    │   ├── GraphTypes.h
-    │   ├── NodeGraph.cpp
-    │   ├── NodeGraph.h
-    │   ├── NodeRenderer.cpp
-    │   └── NodeRenderer.h
-    ├── params/
-    │   ├── ParamIDs.h
-    │   ├── ParamLayout.cpp
-    │   └── ParamLayout.h
-    └── ui/
-        ├── ImGuiHost.cpp
-        ├── ImGuiHost.h
-        ├── ImGuiOpenGLBackend.cpp
-        ├── InfoPanel.cpp
-        ├── InfoPanel.h
-        ├── RandomizeButton.cpp
-        └── RandomizeButton.h
+AuralForge/Source/
+├── graph/          # GraphTypes, NodeGraph, NodeRenderer — new node types, pin kinds, persistence
+├── dsp/            # LiveGraphEngine — gain, conditioning merge, dual analysis snapshots
+├── ui/             # InfoPanel — chain/element plots, N-channel overlay, transfer marker
+├── PluginEditor.*  # Orchestration, analysis requests, invalidation
+└── PluginProcessor.* # Live capture publication, revision tokens
 Tests/
 ├── LiveGraphEngineTests.cpp
-├── ProcessorIntegrationTests.cpp
-└── TCNModelTests.cpp
+└── ProcessorIntegrationTests.cpp
 ```
 
-**Structure Decision**: Keep the existing single-project plug-in structure. Phase 2.2 work will primarily extend `graph/` for persisted graph/control state, `ui/` and `PluginEditor.*` for rendering and interaction orchestration, `dsp/` for analysis snapshots and gain-aware runtime behavior, and `Tests/` for processor and graph-level regression coverage.
+**Structure Decision**: Extend existing single-project layout. New `NodeType` values (`knobInput`, `xyTrackpad`), pin/signal kind metadata, analysis snapshot types, and InfoPanel rendering are the primary touchpoints.
 
 ## Phase 0: Research Focus
 
-- Determine the safest architecture for cumulative analysis snapshots without performing allocations or heavyweight transforms on the audio thread.
-- Define a control-state persistence model for knob mode, XY bindings, and analysis view preferences that fits the existing `ValueTree` graph serialization.
-- Decide how Gold BlackBox analysis should consume compiled behavior while matching Blue-node analysis semantics.
-- Confirm practical validation strategy using existing CTest console apps plus targeted graph/processor assertions.
+- Background-thread dual snapshot architecture (chain vs element-only) without audio-thread work
+- N-channel/feature-dimension plot series layout and legend strategy
+- Conditioning source elements + Merge extension (audio + scalar conditioning lanes)
+- Gold BlackBox analysis at compiled boundary with same view semantics as Blue
+- Transfer live marker sampling from published live capture during playback
 
 ## Phase 1: Design Focus
 
-- Model analysis view state, per-parameter control mode, XY bindings, and gain-enabled properties in the graph document.
-- Define runtime contracts between editor, graph document, processor, and DSP analysis pipeline.
-- Define end-to-end validation scenarios for live nodes, frozen nodes, state recall, and glitch-free interaction.
+- Graph document entities for Knob Input, XY Trackpad, extended Merge, Gain property, analysis preferences
+- Analysis/runtime and graph-control UI contracts
+- End-to-end quickstart covering stereo and multi-channel paths, Merge routing, Gold parity, state recall
 
 ## Complexity Tracking
 
-No constitution violations currently require justification.
+No constitution violations require justification.
+
+## Execution Notes
+
+Implementation follows `tasks.md`. Shared plumbing first, then US1 (analysis), US2 (Gain), US3 (Knob Input), US4 (XY Trackpad).
+
+**Artifact map**
+- Data model: `data-model.md`
+- Contracts: `contracts/analysis-runtime-contract.md`, `contracts/graph-control-ui-contract.md`
+- Validation: `quickstart.md`
+
+**Implementation anchors**
+- Graph: `GraphTypes.h`, `NodeGraph.*`, `NodeRenderer.*`
+- Analysis UI: `ui/InfoPanel.*`, `PluginEditor.*`
+- Runtime/analysis: `dsp/LiveGraphEngine.*`, `PluginProcessor.*`

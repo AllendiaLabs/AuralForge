@@ -1,40 +1,74 @@
-# Contract: Graph Control UI
+# Contract: Graph Control & Conditioning UI
 
 ## Purpose
 
-Define the user-facing interaction rules for gain editing, knob controls, XY bindings, and analysis access in the Phase 2.2 graph editor.
+Define interaction rules for Gain, Knob Input, XY Trackpad, Merge routing, and analysis access in Phase 2.2.
 
-## Node-Level Requirements
+## Element Menu
 
-1. Any node with Phase 2.2 analysis support MUST expose an entry point to open its analysis panel.
-2. Activation and TCN nodes MUST expose a `Gain` property in the same inline property system as other node parameters.
-3. Gold BlackBox nodes MUST expose the same analysis access path as Blue nodes.
+1. Menu MUST include **Knob Input** and **XY Trackpad** as draggable source elements alongside Audio Input and processing elements.
+2. Knob/XY are added to canvas like any other element (drag from menu).
 
-## Parameter Editing Rules
+## Knob Input Element
 
-1. Canonical parameter values remain node-property values; text, knob, and XY are alternate control surfaces for those values.
-2. A parameter that supports knob mode MUST show both its control surface and current numeric value.
-3. Knob editing MUST honor the parameter's existing range and stepping rules.
-4. Parameters that do not support knob or XY control MUST remain text-only.
+1. Node MUST expose a rotary control and numeric readout of current conditioning output.
+2. One conditioning output pin; connects to Merge inputs and/or processing element input ports.
+3. Adjusting the knob MUST update runtime conditioning and downstream audio without glitches.
+4. Knob MUST NOT read or write inline architectural properties on other nodes.
 
-## XY Binding Rules
+## XY Trackpad Element
 
-1. An XY control binds exactly two distinct supported parameters on the same node.
-2. The user MUST be able to choose which property maps to X and which maps to Y.
-3. Moving the XY pointer MUST update both bound parameters in real time.
-4. The UI MUST display the current values of both bound parameters while the XY control is active.
-5. If one bound property becomes invalid or unsupported, the XY binding MUST be cleared or marked invalid on restore rather than silently binding to a different property.
+1. Node MUST expose a 2D pad with X and Y numeric readouts.
+2. Two conditioning output pins (X, Y); each may wire independently.
+3. Pointer movement MUST update both outputs in real time when connected.
+4. MUST NOT modify inline architectural properties on other nodes.
 
-## Analysis Panel Rules
+## Merge Element
 
-1. The panel MUST offer transfer, frequency, and phase analysis views.
-2. Left and right channels MUST be shown on the same plot using distinguishable visual styling.
-3. The panel MUST continue to function for Gold nodes and for situations where live input is unavailable.
-4. When probe fallback is active, the UI MUST indicate that analysis is probe-driven rather than live-driven.
+1. MUST accept audio and conditioning inputs on existing input pins (extended validation).
+2. Primary pattern: Audio In + Knob/XY → Merge → downstream processing.
+3. Direct Knob/XY → element connections MUST remain valid (not refused).
+4. With no conditioning inputs, implicit conditioning contribution is **c = 0**.
+5. Operating modes: add/multiply combine conditioning scalars; concatenate is audio-only.
 
-## Persistence Rules
+## Processing Elements
 
-1. Gain values MUST persist with normal graph state recall.
-2. Per-parameter knob/text mode selections MUST persist with graph state recall.
-3. XY axis bindings MUST persist with graph state recall.
-4. Selected analysis-view preferences MAY persist per node if the implementation chooses node-local preferences; if not, the implementation must define one consistent session-level default.
+1. Phase 2 input port layout unchanged (no new port types).
+2. Ports accept compatible audio, conditioning, or Merge outputs per `signalKind` rules.
+3. Activation and TCN MUST expose inline **Gain** property (architectural/runtime slope control).
+4. Gold BlackBox MUST expose same analysis entry as Blue nodes.
+
+## Port Compatibility (high level)
+
+| Source kind | Valid destinations |
+|-------------|-------------------|
+| audio | audio inputs, Merge (audio lane) |
+| conditioning | Merge (conditioning lane), processing inputs accepting conditioning |
+| Merge output | processing element inputs matching merged signal kind |
+
+Incompatible connections MUST show red cable + tooltip (existing shape-integrity pattern).
+
+## Analysis Panel
+
+1. Views: transfer, frequency, phase.
+2. Each view shows **chain** and **element-only** curve families.
+3. One trace per channel/feature dimension on shared axes with distinguishable styling + legend.
+4. Transfer: static curves always; live marker on chain curve during playback only.
+5. Probe fallback MUST be indicated in UI when not live-driven.
+
+## Persistence
+
+1. Knob/XY positions, conditioning values, and cable topology MUST persist in graph state.
+2. Gain values MUST persist with node properties.
+3. Per-node selected analysis view MAY persist (recommended).
+
+## Excluded from Freeze Subgraphs
+
+Knob Input and XY Trackpad are UI/control sources and MUST NOT be included in TorchScript freeze compilation in Phase 2.2.
+
+## Implementation Anchors
+
+- Types + pins: `AuralForge/Source/graph/GraphTypes.h`
+- Validation + persistence: `AuralForge/Source/graph/NodeGraph.cpp`
+- Rendering: `AuralForge/Source/graph/NodeRenderer.cpp`
+- Editor orchestration: `AuralForge/Source/PluginEditor.cpp`

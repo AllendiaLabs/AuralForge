@@ -2,134 +2,156 @@
 
 ## Overview
 
-Phase 2.2 extends the existing graph document with analysis-view state and alternate parameter-input metadata while preserving the current node/link/runtime split.
+Phase 2.2 extends the graph document with analysis state, Gain on Activation/TCN, new conditioning source node types, Merge conditioning lanes, and N-dimensional analysis snapshots — preserving the existing node/link/runtime split.
 
 ## Entities
 
 ### Graph Node
 
-Represents one editable or frozen graph element already stored in the graph document.
+Represents one editable or frozen graph element in the document.
 
-**Existing fields used by Phase 2.2**
-- `id`: stable node identifier
-- `type`: node kind (`audioInput`, `audioOutput`, `linear`, `convolution`, `activation`, `tcn`, `blackBox`, etc.)
-- `state`: runtime mode (`liveBlue` or `frozenGold`)
-- `properties`: canonical editable parameter rows
-- `hasWeights`, `seed`, `explicitSeed`, `useExplicitSeed`
-- `metrics`, `artifactPath`, `sourceSubgraph`
+**Existing fields used**
+- `id`, `type`, `state`, `label`, `position`, `size`, `colour`
+- `inputs`, `outputs` (pin vectors)
+- `properties`, `hasWeights`, `seed`, `explicitSeed`, `useExplicitSeed`
+- `metrics`, `artifactPath`, `sourceSubgraph` (BlackBox)
 
-**New Phase 2.2 fields**
-- `analysisEnabled`: whether the node can expose analysis views
-- `selectedAnalysisView`: current preferred view for this node (`transfer`, `frequency`, `phase`)
-- `controlBindings`: collection of input-mode metadata for editable parameters
-- `xyBinding`: optional two-parameter XY assignment owned by this node
+**New / extended `type` values**
+- `knobInput` — 1D conditioning source
+- `xyTrackpad` — 2D conditioning source (X/Y outputs)
+
+**New Phase 2.2 fields (where applicable)**
+- `selectedAnalysisView`: `transfer` | `frequency` | `phase` (per-node UI preference)
+- `conditioningValue`: scalar output for `knobInput` (persisted knob position/value)
+- `conditioningX`, `conditioningY`: scalar outputs for `xyTrackpad`
 
 **Validation rules**
 - All `activation` and `tcn` nodes MUST expose a `gain` property.
-- `blackBox` nodes in `frozenGold` state MUST still allow analysis access.
-- `audioInput` and `audioOutput` nodes may expose analysis, but only with boundary-node semantics.
+- `knobInput` / `xyTrackpad` nodes MUST NOT expose weight randomization controls.
+- `blackBox` (`frozenGold`) MUST allow analysis access at compiled boundary.
+- `audioInput` / `audioOutput` use boundary-node analysis semantics only.
+
+### Pin
+
+Endpoint on a graph node.
+
+**Extended metadata**
+- `signalKind`: `audio` | `conditioning` — distinguishes tensor audio paths from scalar conditioning paths
+- `shape` (existing): channel count for audio; scalar semantics for conditioning
+
+**Validation rules**
+- `knobInput`: one `conditioning` output
+- `xyTrackpad`: two `conditioning` outputs (`x`, `y`)
+- Processing element inputs remain Phase 2 layout; connection validator accepts compatible `audio`, `conditioning`, or Merge output per rules in graph-control contract
+- Merge inputs accept both `audio` and `conditioning`; Merge output signal kind inferred from connected inputs
 
 ### Node Property
 
-Canonical parameter definition committed to runtime regardless of whether the user edits it via text, knob, or XY control.
-
-**Fields**
-- `key`: stable property identifier
-- `label`: user-visible property label
-- `value`: current validated value
-- `minimum` / `maximum`: inclusive bounds
-- `kind`: property kind
-- `choices`: allowed labels when the property is enumerated
+Canonical architectural parameter (unchanged ownership model).
 
 **Phase 2.2 extensions**
-- `supportsKnob`: whether a rotary control is allowed
-- `supportsXY`: whether the property may be bound to an XY axis
-- `displayMode`: current preferred single-parameter editing mode (`text` or `knob`)
+- `gain` on `activation` and `tcn`: continuous, default `1.0`, range `[0.1, 10.0]`
 
 **Validation rules**
-- Gain MUST be a continuous property on Activation and TCN nodes.
-- Knob mode MUST respect the property's existing bounds and step behavior.
-- XY binding MUST reference only properties flagged `supportsXY`.
+- Gain changes MUST NOT alter Knob/XY conditioning values.
+- Invalid Gain text input MUST clamp or reject with user feedback (implementation choice; must not corrupt runtime).
 
-### XY Binding
+### Knob Input Element (node)
 
-Represents a per-node two-axis control assignment.
+Graph source for 1D conditioning **c**.
 
 **Fields**
-- `enabled`: whether the binding is active
-- `xPropertyKey`: parameter key mapped to horizontal movement
-- `yPropertyKey`: parameter key mapped to vertical movement
-- `xNormalizedValue`: last persisted X position
-- `yNormalizedValue`: last persisted Y position
+- `conditioningValue`: current scalar output
+- `minimum`, `maximum`: optional UI bounds (defaults TBD in implementation, e.g. −10..10 per steerable demos)
+- Position, label, colour (standard node fields)
+
+**Relationships**
+- Output connects to Merge conditioning inputs or directly to processing element inputs
+- Does NOT bind to `NodeProperty` keys on other nodes
+
+### XY Trackpad Element (node)
+
+Graph source for 2D conditioning (c0, c1).
+
+**Fields**
+- `conditioningX`, `conditioningY`: current scalar outputs
+- Normalized pad position (persisted for restore)
+- Two conditioning output pins
 
 **Validation rules**
-- Both property keys MUST belong to the same node.
-- X and Y MUST reference distinct parameter keys.
-- If either bound property becomes unavailable, the binding becomes invalid and must be cleared or repaired on restore.
+- X and Y are independent scalars; each may wire separately
+
+### Merge Element (extended)
+
+Existing merge node with conditioning lane support.
+
+**Fields (existing)**
+- `mode`: add | multiply | concatenate
+- Multiple inputs, one output
+
+**Phase 2.2 behavior**
+- Accepts audio and/or conditioning inputs
+- When no conditioning inputs connected: implicit **c = 0** contribution
+- `concatenate` applies to audio channel expansion only, not scalar conditioning combination
 
 ### Analysis Panel State
 
-Represents the current UI state for per-element cumulative analysis.
+UI state for per-element analysis.
 
 **Fields**
-- `nodeId`: selected node being analyzed
-- `view`: selected analysis view (`transfer`, `frequency`, `phase`)
+- `nodeId`: selected node
+- `view`: `transfer` | `frequency` | `phase`
 - `signalSourceMode`: `livePreferredWithProbeFallback`
-- `channelOverlayMode`: `stereoSharedPlot`
-- `status`: `live`, `probeFallback`, `disconnected`, or `unavailable`
+- `transferMarkerVisible`: true only during active playback
+- `status`: `live` | `probeFallback` | `disconnected` | `unavailable`
 
-**Validation rules**
-- The panel MUST always identify whether it is driven by live input or fallback probe behavior.
-- Left and right channels MUST be rendered on shared axes when stereo data exists.
+### Analysis Snapshot
 
-### Cumulative Signal Snapshot
-
-Immutable analysis result generated from the current runtime graph and consumed by the editor.
+Immutable result consumed by InfoPanel.
 
 **Fields**
-- `nodeId`: node the snapshot corresponds to
-- `runtimeState`: `liveBlue` or `frozenGold`
-- `sourceMode`: `live` or `probe`
-- `sampleRate`
-- `leftChannelSeries`: sampled plot data for the active analysis view
-- `rightChannelSeries`: sampled plot data for the active analysis view
-- `generatedAtRevision`: graph/runtime revision identifier
-- `isStale`: whether the graph changed after generation
+- `nodeId`, `runtimeState` (`liveBlue` | `frozenGold`), `sourceMode` (`live` | `probe`), `view`
+- `channelCount`: number of feature dimensions at analysis point
+- `chainSeries`: array of `channelCount` curve series (each series: sampled x/y points)
+- `elementOnlySeries`: array of `channelCount` curve series
+- `transferMarker` (optional): `{ inputLevel, outputLevel, channelIndex }` — chain curve only, playback only
+- `generatedAtRevision`, `isStale`
+
+**Series layout by view**
+- Transfer: x = input amplitude, y = output amplitude (per dimension)
+- Frequency: x = frequency (Hz, log axis), y = magnitude (dB)
+- Phase: x = frequency (Hz, log axis), y = phase (degrees)
 
 **Validation rules**
-- Snapshot data MUST map to a specific node and runtime revision.
-- Snapshot generation MUST not mutate audio-thread state.
-- Gold-node snapshots MUST reflect compiled BlackBox behavior at the node boundary.
+- `chainSeries` and `elementOnlySeries` MUST each have length `channelCount`
+- Snapshot generation MUST NOT mutate audio-thread state
+- Gold snapshots reflect compiled boundary behavior
 
 ## Relationships
 
-- One **Graph Node** owns many **Node Properties**.
-- One **Graph Node** may own zero or one **XY Binding**.
-- One **Graph Node** may be associated with many historical **Cumulative Signal Snapshots**, though only the latest valid snapshot is displayed.
-- One **Analysis Panel State** targets one active **Graph Node** at a time.
+- Graph has many nodes and links
+- `knobInput` / `xyTrackpad` are source nodes (like `audioInput`)
+- Merge aggregates many inputs → one output
+- One Analysis Panel State targets one node at a time
+- One Analysis Snapshot corresponds to one (node, view, revision) request
 
 ## State Transitions
 
-### Analysis Source State
+### Analysis source
+`unavailable` → `probeFallback` → `live` (and reverse when signal suitability changes)
 
-`disconnected/unavailable` -> `probeFallback` when no suitable live signal exists  
-`probeFallback` -> `live` when suitable live input becomes available  
-`live` -> `probeFallback` when live input becomes unsuitable  
+### Transfer marker
+`hidden` (stopped) ↔ `visible` (playing, on chain curve)
 
-### Node Runtime State
-
-`liveBlue` -> `frozenGold` after successful manual freeze  
-`frozenGold` -> `liveBlue` after unfreeze  
-
-Phase 2.2 does not add new runtime states, but analysis support must remain valid across both transitions.
-
-### Control Binding State
-
-`text` <-> `knob` for single-parameter display mode  
-`xy disabled` -> `xy enabled` when two valid properties are assigned  
-`xy enabled` -> `xy disabled` when bindings are cleared or become invalid
+### Runtime mode
+`liveBlue` ↔ `frozenGold` (freeze/unfreeze); analysis semantics preserved
 
 ## Persistence Notes
 
-- All new node-level control metadata should serialize with the existing graph document rather than a separate store.
-- Save/restore tests should verify gain values, knob display modes, XY bindings, and selected analysis views in the same recall path already used for seeds and graph topology.
+Serialize in graph `ValueTree`:
+- Knob/XY node types, positions, conditioning values
+- Gain property values
+- Per-node `selectedAnalysisView`
+- Full cable topology (direct and via Merge)
+
+Do NOT persist ephemeral snapshot buffers or transfer marker positions.
