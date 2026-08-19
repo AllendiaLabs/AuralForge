@@ -28,6 +28,8 @@ namespace auralforge::dsp {
 bool TCNConfiguration::isValid() const noexcept {
   // Conv1d dilation is signed and 2^(depth-1) must remain representable.
   return depth >= 1 && depth <= 30 && kernelSize >= 2 && channels >= 1 &&
+         dilation >= 1 &&
+         dilation <= (std::numeric_limits<int>::max() >> (depth - 1)) &&
          inputChannels >= 1 && inputChannels <= 2 &&
          outputChannels == inputChannels;
 }
@@ -46,7 +48,7 @@ TCNModel::TCNModel(TCNConfiguration configuration) : config(configuration) {
   receptiveField = 1;
 
   for (int layer = 0; layer < config.depth; ++layer) {
-    const auto dilation = 1 << layer;
+    const auto dilation = config.dilation << layer;
     convolutions->push_back(torch::nn::Conv1d(
         torch::nn::Conv1dOptions(config.channels, config.channels,
                                  config.kernelSize)
@@ -75,7 +77,7 @@ torch::Tensor TCNModel::forward(const torch::Tensor &input) {
   auto value = inputProjection->forward(input);
 
   for (std::size_t layer = 0; layer < convolutions->size(); ++layer) {
-    const auto dilation = std::int64_t{1} << layer;
+    const auto dilation = static_cast<std::int64_t>(config.dilation) << layer;
     const auto leftPadding =
         static_cast<std::int64_t>(config.kernelSize - 1) * dilation;
     value = torch::nn::functional::pad(
@@ -98,7 +100,10 @@ void TCNModel::randomizeWeights(std::uint64_t seed) {
     auto *data = contiguous.data_ptr<float>();
     const auto count = contiguous.numel();
     const auto fanIn =
-        count > 0 ? std::max<std::int64_t>(1, parameter.size(-1)) : 1;
+        count > 0 ? std::max<std::int64_t>(
+                        1, parameter.size(-1) *
+                               (parameter.dim() > 1 ? parameter.size(1) : 1))
+                  : 1;
     const auto scale =
         static_cast<float>(std::sqrt(6.0 / static_cast<double>(fanIn)));
 
@@ -137,6 +142,7 @@ std::uint64_t TCNModel::getArchitectureHash() const noexcept {
   hashCombine(hash, static_cast<std::uint64_t>(config.depth));
   hashCombine(hash, static_cast<std::uint64_t>(config.kernelSize));
   hashCombine(hash, static_cast<std::uint64_t>(config.channels));
+  hashCombine(hash, static_cast<std::uint64_t>(config.dilation));
   hashCombine(hash, static_cast<std::uint64_t>(config.inputChannels));
   hashCombine(hash, static_cast<std::uint64_t>(config.outputChannels));
   hashCombine(hash, static_cast<std::uint64_t>(config.activation));

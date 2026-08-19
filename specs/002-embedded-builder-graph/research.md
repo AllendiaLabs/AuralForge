@@ -72,3 +72,19 @@
 - **Alternatives considered**:
   - Full tracing/log aggregation: rejected as over-scoped for this phase.
   - No visible metrics, tests only: rejected because the user explicitly requested live metrics.
+
+## Decision 10: Compile the editable document into immutable live graph runtimes
+
+- **Decision**: Add a dedicated live graph compiler and publisher between the
+  editable `NodeGraph` and the audio callback. The compiler validates the DAG,
+  infers channels, constructs element-local weights, prepares mutable history
+  off-thread, and atomically publishes a complete runtime.
+- **Rationale**: The original task list only synchronized inline TCN controls
+  and would have left newly placed Linear, Conv1D, and Activation nodes as
+  visual metadata. A real modular runtime is required for FR-002, FR-004,
+  FR-007, FR-022, and the constitution's Live Blue engine.
+- **Alternatives considered**:
+  - Keep the Phase 1 TCN as the only audio runtime: rejected because custom
+    graphs would not affect sound.
+  - Mutate a live module in place: rejected because it races the audio thread
+    and breaks deterministic element-local randomization.

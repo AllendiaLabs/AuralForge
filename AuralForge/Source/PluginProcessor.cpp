@@ -9,11 +9,12 @@
 #include <sstream>
 
 namespace {
-constexpr std::array<const char *, 8> listenedParameterIDs{
-    auralforge::params::depth,      auralforge::params::kernelSize,
-    auralforge::params::channels,   auralforge::params::activation,
-    auralforge::params::randomize,  auralforge::params::randomizeCC,
-    auralforge::params::globalSeed, auralforge::params::dryWet};
+constexpr std::array<const char *, 9> listenedParameterIDs{
+    auralforge::params::depth,       auralforge::params::kernelSize,
+    auralforge::params::channels,    auralforge::params::dilation,
+    auralforge::params::activation,  auralforge::params::randomize,
+    auralforge::params::randomizeCC, auralforge::params::globalSeed,
+    auralforge::params::dryWet};
 
 constexpr std::uint64_t maximumRealtimeHistory = 1U << 20U;
 constexpr int minimumPreparedBlockSize = 8192;
@@ -23,7 +24,7 @@ bool sameConfiguration(
     const auralforge::dsp::TCNConfiguration &left,
     const auralforge::dsp::TCNConfiguration &right) noexcept {
   return left.depth == right.depth && left.kernelSize == right.kernelSize &&
-         left.channels == right.channels &&
+         left.channels == right.channels && left.dilation == right.dilation &&
          left.inputChannels == right.inputChannels &&
          left.outputChannels == right.outputChannels &&
          left.activation == right.activation;
@@ -110,8 +111,19 @@ void AuralForgeAudioProcessor::changeProgramName(int index,
 void AuralForgeAudioProcessor::prepareToPlay(double sampleRate,
                                              int samplesPerBlock) {
   currentSampleRate.store(sampleRate, std::memory_order_release);
+  constexpr auto dcBlockerCutoffHz = 20.0;
+  dcBlockerCoefficient.store(
+      static_cast<float>(
+          std::exp(-juce::MathConstants<double>::twoPi * dcBlockerCutoffHz /
+                   std::max(1.0, sampleRate))),
+      std::memory_order_release);
   preparedBlockSize.store(std::max(samplesPerBlock, minimumPreparedBlockSize),
                           std::memory_order_release);
+  const auto maximumBlock = preparedBlockSize.load(std::memory_order_acquire);
+  const auto outputChannels = std::max(1, getTotalNumOutputChannels());
+  graphWetBuffer.setSize(outputChannels, maximumBlock, false, false, true);
+  previousGraphWetBuffer.setSize(outputChannels, maximumBlock, false, false,
+                                 true);
   prepared.store(true, std::memory_order_release);
 
   auto snapshot = modelBuilder.getPublishedModel();
@@ -125,14 +137,23 @@ void AuralForgeAudioProcessor::prepareToPlay(double sampleRate,
     snapshot = modelBuilder.buildNow(configuration, seed + counter, counter);
   }
   publishRuntime(snapshot);
+  requestGraphCompile();
 }
 
 void AuralForgeAudioProcessor::releaseResources() {
   prepared.store(false, std::memory_order_release);
   std::atomic_store_explicit(&publishedRuntime, std::shared_ptr<RuntimeState>{},
                              std::memory_order_release);
+  if (auto graphRuntime = graphPublisher.getPublishedRuntime())
+    graphRuntime->reset();
   activeRuntime.reset();
   previousRuntime.reset();
+  activeGraphRuntime.reset();
+  previousGraphRuntime.reset();
+  graphWetBuffer.setSize(0, 0);
+  previousGraphWetBuffer.setSize(0, 0);
+  graphDcInput.fill(0.0f);
+  graphDcOutput.fill(0.0f);
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -179,81 +200,39 @@ void AuralForgeAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
   }
 
-  auto latestRuntime =
-      std::atomic_load_explicit(&publishedRuntime, std::memory_order_acquire);
-  if (latestRuntime != nullptr && latestRuntime != activeRuntime) {
-    previousRuntime = activeRuntime;
-    activeRuntime = std::move(latestRuntime);
-    activeRuntime->lookback.clear();
-    crossfadeSamplesRemaining =
-        previousRuntime != nullptr ? modelCrossfadeSamples : 0;
-  }
-
-  if (activeRuntime == nullptr || numSamples > activeRuntime->maximumBlockSize)
-    return;
-
-  float peak = 0.0f;
+  float graphInputPeak = 0.0f;
   for (int channel = 0; channel < inputChannels; ++channel)
-    peak = std::max(peak, buffer.getMagnitude(channel, 0, numSamples));
-
-  if (peak < 1.0e-6f) {
-    activeRuntime->lookback.updateFromBlock(buffer, numSamples);
-    if (previousRuntime != nullptr)
-      previousRuntime->lookback.updateFromBlock(buffer, numSamples);
-    buffer.clear();
-    return;
+    graphInputPeak =
+        std::max(graphInputPeak, buffer.getMagnitude(channel, 0, numSamples));
+  if (graphInputPeak < 1.0e-6f) {
+    if (auto graphRuntime = graphPublisher.getPublishedRuntime()) {
+      graphRuntime->reset();
+      if (activeGraphRuntime != nullptr)
+        activeGraphRuntime->reset();
+      if (previousGraphRuntime != nullptr)
+        previousGraphRuntime->reset();
+      buffer.clear();
+      graphDcInput.fill(0.0f);
+      graphDcOutput.fill(0.0f);
+      return;
+    }
   }
 
-  try {
-    auto wet = runModel(*activeRuntime, buffer, numSamples);
-    torch::Tensor oldWet;
-    const auto useCrossfade = previousRuntime != nullptr &&
-                              crossfadeSamplesRemaining > 0 &&
-                              previousRuntime->maximumBlockSize >= numSamples;
-    if (useCrossfade)
-      oldWet = runModel(*previousRuntime, buffer, numSamples);
+  if (processLiveGraph(buffer, inputChannels, numSamples))
+    return;
 
-    activeRuntime->lookback.updateFromBlock(buffer, numSamples);
-    if (useCrossfade)
-      previousRuntime->lookback.updateFromBlock(buffer, numSamples);
-
-    const auto wetStart = wet.size(2) - numSamples;
-    const auto oldStart = useCrossfade ? oldWet.size(2) - numSamples : 0;
-    const auto wetChannelStride = wet.stride(1);
-    const auto wetSampleStride = wet.stride(2);
-    const auto oldChannelStride = useCrossfade ? oldWet.stride(1) : 0;
-    const auto oldSampleStride = useCrossfade ? oldWet.stride(2) : 0;
-    const auto *wetData = wet.data_ptr<float>();
-    const auto *oldData = useCrossfade ? oldWet.data_ptr<float>() : nullptr;
-    const auto dryWet =
-        parameters.getRawParameterValue(auralforge::params::dryWet)->load();
-
-    for (int sample = 0; sample < numSamples; ++sample) {
-      const auto fade =
-          useCrossfade && crossfadeSamplesRemaining > 0
-              ? 1.0f - static_cast<float>(crossfadeSamplesRemaining) /
-                           static_cast<float>(modelCrossfadeSamples)
-              : 1.0f;
-
-      for (int channel = 0; channel < inputChannels; ++channel) {
-        auto processed = wetData[channel * wetChannelStride +
-                                 (wetStart + sample) * wetSampleStride];
-        if (useCrossfade) {
-          const auto previous = oldData[channel * oldChannelStride +
-                                        (oldStart + sample) * oldSampleStride];
-          processed = previous + fade * (processed - previous);
-        }
-
-        const auto dry = buffer.getSample(channel, sample);
-        buffer.setSample(channel, sample, dry + dryWet * (processed - dry));
-      }
-
-      if (crossfadeSamplesRemaining > 0)
-        --crossfadeSamplesRemaining;
+  graphDcInput.fill(0.0f);
+  graphDcOutput.fill(0.0f);
+  const auto dryWet =
+      parameters.getRawParameterValue(auralforge::params::dryWet)->load();
+  if (dryWet >= 1.0f - 1.0e-6f)
+    buffer.clear();
+  else if (dryWet > 1.0e-6f) {
+    for (int channel = 0; channel < outputChannels; ++channel) {
+      auto *samples = buffer.getWritePointer(channel);
+      for (int sample = 0; sample < numSamples; ++sample)
+        samples[sample] *= (1.0f - dryWet);
     }
-  } catch (const std::exception &) {
-    // Preserve the original input when an unsupported runtime shape reaches the
-    // host.
   }
 }
 
@@ -267,6 +246,11 @@ void AuralForgeAudioProcessor::getStateInformation(
     juce::MemoryBlock &destData) {
   auto xml = parameters.copyState().createXml();
   const auto snapshot = modelBuilder.getPublishedModel();
+  {
+    const juce::ScopedLock lock(graphStateLock);
+    if (persistedGraphState.isValid())
+      xml->addChildElement(persistedGraphState.createXml().release());
+  }
 
   if (snapshot != nullptr && snapshot->model != nullptr) {
     std::ostringstream stream(std::ios::binary);
@@ -294,7 +278,14 @@ void AuralForgeAudioProcessor::setStateInformation(const void *data,
     return;
 
   restoringState.store(true, std::memory_order_release);
-  parameters.replaceState(juce::ValueTree::fromXml(*xml));
+  auto restoredState = juce::ValueTree::fromXml(*xml);
+  const auto restoredGraph = restoredState.getChildWithName("GraphDocument");
+  if (restoredGraph.isValid()) {
+    const juce::ScopedLock lock(graphStateLock);
+    persistedGraphState = restoredGraph.createCopy();
+    restoredState.removeChild(restoredGraph, nullptr);
+  }
+  parameters.replaceState(restoredState);
   restoringState.store(false, std::memory_order_release);
 
   const auto counter = static_cast<std::uint64_t>(
@@ -326,6 +317,7 @@ void AuralForgeAudioProcessor::setStateInformation(const void *data,
   }
 
   publishRuntime(snapshot);
+  requestGraphCompile();
 }
 
 juce::AudioProcessorValueTreeState &
@@ -342,6 +334,8 @@ AuralForgeAudioProcessor::getRequestedConfiguration() const noexcept {
       parameters.getRawParameterValue(auralforge::params::kernelSize)->load());
   configuration.channels = juce::roundToInt(
       parameters.getRawParameterValue(auralforge::params::channels)->load());
+  configuration.dilation = juce::roundToInt(
+      parameters.getRawParameterValue(auralforge::params::dilation)->load());
   configuration.activation =
       static_cast<auralforge::dsp::ActivationType>(juce::roundToInt(
           parameters.getRawParameterValue(auralforge::params::activation)
@@ -353,14 +347,26 @@ AuralForgeAudioProcessor::getRequestedConfiguration() const noexcept {
 
 std::uint64_t
 AuralForgeAudioProcessor::getReceptiveFieldSamples() const noexcept {
-  const auto snapshot = modelBuilder.getPublishedModel();
-  return snapshot != nullptr ? snapshot->model->getReceptiveField() : 0;
+  const auto graphRuntime = graphPublisher.getPublishedRuntime();
+  if (graphRuntime != nullptr)
+    return graphRuntime->getSnapshot()->getReceptiveField();
+  return 0;
 }
 
 std::uint64_t
 AuralForgeAudioProcessor::getModelParameterCount() const noexcept {
-  const auto snapshot = modelBuilder.getPublishedModel();
-  return snapshot != nullptr ? snapshot->model->getParameterCount() : 0;
+  const auto graphRuntime = graphPublisher.getPublishedRuntime();
+  if (graphRuntime != nullptr)
+    return graphRuntime->getSnapshot()->getParameterCount();
+  return 0;
+}
+
+double AuralForgeAudioProcessor::getFrozenInferenceTimeMilliseconds(
+    std::int32_t nodeId) const noexcept {
+  const auto runtime = graphPublisher.getPublishedRuntime();
+  if (runtime == nullptr)
+    return 0.0;
+  return runtime->getFrozenInferenceTimeMilliseconds(nodeId);
 }
 
 double AuralForgeAudioProcessor::getCurrentSampleRate() const noexcept {
@@ -368,8 +374,121 @@ double AuralForgeAudioProcessor::getCurrentSampleRate() const noexcept {
 }
 
 juce::String AuralForgeAudioProcessor::getModelError() const {
+  const auto graphError = graphPublisher.getLastError();
+  if (graphError.isNotEmpty())
+    return graphError;
   const juce::ScopedLock lock(errorLock);
   return runtimeError.isNotEmpty() ? runtimeError : modelBuilder.getLastError();
+}
+
+void AuralForgeAudioProcessor::applyGraphConfiguration(
+    const auralforge::dsp::TCNConfiguration &configuration) {
+  if (!configuration.isValid())
+    return;
+  const auto update = [this](const char *identifier, float value) {
+    if (auto *parameter = parameters.getParameter(identifier)) {
+      parameter->beginChangeGesture();
+      parameter->setValueNotifyingHost(parameter->convertTo0to1(value));
+      parameter->endChangeGesture();
+    }
+  };
+  update(auralforge::params::depth, static_cast<float>(configuration.depth));
+  update(auralforge::params::kernelSize,
+         static_cast<float>(configuration.kernelSize));
+  update(auralforge::params::channels,
+         static_cast<float>(configuration.channels));
+  update(auralforge::params::dilation,
+         static_cast<float>(configuration.dilation));
+  update(auralforge::params::activation,
+         static_cast<float>(configuration.activation));
+}
+
+void AuralForgeAudioProcessor::randomizeGraphElement(std::int32_t nodeId,
+                                                     std::int32_t seed) {
+  if (const auto runtime = graphPublisher.getPublishedRuntime()) {
+    const auto &statistics = runtime->getSnapshot()->getElementStatistics();
+    const auto compiled = std::find_if(
+        statistics.begin(), statistics.end(),
+        [nodeId](const auralforge::dsp::LiveGraphElementStatistics &stats) {
+          return stats.nodeId == nodeId && stats.randomizable;
+        });
+    if (compiled != statistics.end())
+      graphPublisher.requestRandomization(nodeId, seed);
+    return;
+  }
+  const auto unsignedSeed =
+      static_cast<std::uint64_t>(static_cast<std::uint32_t>(seed));
+  const auto elementSalt =
+      static_cast<std::uint64_t>(static_cast<std::uint32_t>(nodeId)) << 32U;
+  modelBuilder.requestBuild(
+      getRequestedConfiguration(), unsignedSeed ^ elementSalt,
+      randomizationCounter.load(std::memory_order_acquire));
+}
+
+juce::ValueTree AuralForgeAudioProcessor::getGraphState() const {
+  const juce::ScopedLock lock(graphStateLock);
+  return persistedGraphState.createCopy();
+}
+
+void AuralForgeAudioProcessor::setGraphState(const juce::ValueTree &graphState,
+                                             bool compileRuntime) {
+  if (!graphState.hasType("GraphDocument"))
+    return;
+  {
+    const juce::ScopedLock lock(graphStateLock);
+    persistedGraphState = graphState.createCopy();
+  }
+  if (compileRuntime)
+    requestGraphCompile();
+}
+
+bool AuralForgeAudioProcessor::prepareFrozenArtifact(
+    const auralforge::graph::FreezeSelectionResult &result,
+    std::string &error) {
+  if (result.inputChannels < 1 || result.outputChannels < 1) {
+    error = "Compiled artifact has an invalid channel signature";
+    return false;
+  }
+
+  const auto factory = auralforge::dsp::TorchScriptBlackBoxFactory::load(
+      result.artifactPath, result.inputChannels, result.receptiveFieldSamples,
+      error);
+  if (factory == nullptr ||
+      factory->getOutputChannels() != result.outputChannels)
+    return false;
+
+  const auto current = std::atomic_load_explicit(&publishedFrozenArtifacts,
+                                                 std::memory_order_acquire);
+  auto replacement = current != nullptr
+                         ? std::make_shared<FrozenArtifactRegistry>(*current)
+                         : std::make_shared<FrozenArtifactRegistry>();
+  replacement->artifacts[result.artifactPath] = factory;
+  std::atomic_store_explicit(
+      &publishedFrozenArtifacts,
+      std::shared_ptr<const FrozenArtifactRegistry>(std::move(replacement)),
+      std::memory_order_release);
+  return true;
+}
+
+void AuralForgeAudioProcessor::releaseFrozenArtifact(
+    const std::string &artifactPath) {
+  const auto current = std::atomic_load_explicit(&publishedFrozenArtifacts,
+                                                 std::memory_order_acquire);
+  if (current == nullptr || current->artifacts.count(artifactPath) == 0)
+    return;
+  auto replacement = std::make_shared<FrozenArtifactRegistry>(*current);
+  replacement->artifacts.erase(artifactPath);
+  std::atomic_store_explicit(
+      &publishedFrozenArtifacts,
+      std::shared_ptr<const FrozenArtifactRegistry>(std::move(replacement)),
+      std::memory_order_release);
+}
+
+bool AuralForgeAudioProcessor::hasPreparedFrozenArtifact(
+    const std::string &artifactPath) const noexcept {
+  const auto current = std::atomic_load_explicit(&publishedFrozenArtifacts,
+                                                 std::memory_order_acquire);
+  return current != nullptr && current->artifacts.count(artifactPath) != 0;
 }
 
 void AuralForgeAudioProcessor::parameterChanged(const juce::String &parameterID,
@@ -386,6 +505,7 @@ void AuralForgeAudioProcessor::parameterChanged(const juce::String &parameterID,
   } else if (parameterID == auralforge::params::depth ||
              parameterID == auralforge::params::kernelSize ||
              parameterID == auralforge::params::channels ||
+             parameterID == auralforge::params::dilation ||
              parameterID == auralforge::params::activation) {
     architectureChangePending.store(true, std::memory_order_release);
   } else {
@@ -463,6 +583,135 @@ AuralForgeAudioProcessor::runModel(RuntimeState &runtime,
   torch::InferenceMode inferenceGuard;
   return runtime.snapshot->model->forward(
       runtime.inputTensor.narrow(2, 0, validSamples));
+}
+
+bool AuralForgeAudioProcessor::processLiveGraph(
+    juce::AudioBuffer<float> &buffer, int inputChannels,
+    int numSamples) noexcept {
+  auto latest = graphPublisher.getPublishedRuntime();
+  if (latest != activeGraphRuntime) {
+    previousGraphRuntime = activeGraphRuntime;
+    activeGraphRuntime = std::move(latest);
+    if (activeGraphRuntime != nullptr)
+      activeGraphRuntime->reset();
+    graphCrossfadeSamplesRemaining =
+        previousGraphRuntime != nullptr && activeGraphRuntime != nullptr
+            ? modelCrossfadeSamples
+            : 0;
+  }
+  if (activeGraphRuntime == nullptr ||
+      numSamples > graphWetBuffer.getNumSamples())
+    return false;
+
+  const auto outputChannels = getTotalNumOutputChannels();
+  if (!activeGraphRuntime->processHost(buffer.getArrayOfReadPointers(),
+                                       static_cast<std::size_t>(inputChannels),
+                                       graphWetBuffer.getArrayOfWritePointers(),
+                                       static_cast<std::size_t>(outputChannels),
+                                       static_cast<std::size_t>(numSamples)))
+    return false;
+
+  auto useCrossfade =
+      previousGraphRuntime != nullptr && graphCrossfadeSamplesRemaining > 0;
+  if (useCrossfade && !previousGraphRuntime->processHost(
+                          buffer.getArrayOfReadPointers(),
+                          static_cast<std::size_t>(inputChannels),
+                          previousGraphWetBuffer.getArrayOfWritePointers(),
+                          static_cast<std::size_t>(outputChannels),
+                          static_cast<std::size_t>(numSamples))) {
+    useCrossfade = false;
+    previousGraphRuntime.reset();
+    graphCrossfadeSamplesRemaining = 0;
+  }
+
+  const auto dryWet =
+      parameters.getRawParameterValue(auralforge::params::dryWet)->load();
+  for (int sample = 0; sample < numSamples; ++sample) {
+    const auto fade =
+        useCrossfade && graphCrossfadeSamplesRemaining > 0
+            ? 1.0f - static_cast<float>(graphCrossfadeSamplesRemaining) /
+                         static_cast<float>(modelCrossfadeSamples)
+            : 1.0f;
+    for (int channel = 0; channel < outputChannels; ++channel) {
+      auto processed = graphWetBuffer.getSample(channel, sample);
+      if (useCrossfade) {
+        const auto previous = previousGraphWetBuffer.getSample(channel, sample);
+        processed = previous + fade * (processed - previous);
+      }
+      const auto dry = buffer.getSample(channel, sample);
+      buffer.setSample(channel, sample, dry + dryWet * (processed - dry));
+    }
+    if (graphCrossfadeSamplesRemaining > 0)
+      --graphCrossfadeSamplesRemaining;
+  }
+  if (graphCrossfadeSamplesRemaining == 0)
+    previousGraphRuntime.reset();
+
+  applyDcBlocker(graphDcInput, graphDcOutput, buffer, outputChannels,
+                 numSamples);
+  return true;
+}
+
+void AuralForgeAudioProcessor::applyDcBlocker(RuntimeState &runtime,
+                                              juce::AudioBuffer<float> &buffer,
+                                              int channels,
+                                              int samples) noexcept {
+  applyDcBlocker(runtime.dcInput, runtime.dcOutput, buffer, channels, samples);
+}
+
+void AuralForgeAudioProcessor::applyDcBlocker(std::array<float, 2> &inputState,
+                                              std::array<float, 2> &outputState,
+                                              juce::AudioBuffer<float> &buffer,
+                                              int channels,
+                                              int samples) noexcept {
+  const auto coefficient = dcBlockerCoefficient.load(std::memory_order_relaxed);
+  const auto processedChannels =
+      std::min(channels, static_cast<int>(inputState.size()));
+  for (int channel = 0; channel < processedChannels; ++channel) {
+    auto previousInput = inputState[static_cast<std::size_t>(channel)];
+    auto previousOutput = outputState[static_cast<std::size_t>(channel)];
+    auto *samplesData = buffer.getWritePointer(channel);
+    for (int sample = 0; sample < samples; ++sample) {
+      const auto input = samplesData[sample];
+      const auto output = input - previousInput + coefficient * previousOutput;
+      samplesData[sample] = output;
+      previousInput = input;
+      previousOutput = output;
+    }
+    inputState[static_cast<std::size_t>(channel)] = previousInput;
+    outputState[static_cast<std::size_t>(channel)] = previousOutput;
+  }
+}
+
+void AuralForgeAudioProcessor::requestGraphCompile() {
+  if (!prepared.load(std::memory_order_acquire))
+    return;
+  const auto graphState = getGraphState();
+  if (!graphState.isValid() || graphState.getNumChildren() == 0)
+    return;
+
+  auralforge::dsp::LiveGraphCompileOptions options;
+  options.hostInputChannels = std::max(1, getTotalNumInputChannels());
+  options.hostOutputChannels = std::max(1, getTotalNumOutputChannels());
+  options.maximumBlockSize = preparedBlockSize.load(std::memory_order_acquire);
+  options.maximumHistorySamples = maximumRealtimeHistory;
+  graphPublisher.requestCompile(
+      graphState, options, [this](const auralforge::graph::GraphNode &node) {
+        return resolveFrozenBlackBox(node);
+      });
+}
+
+std::shared_ptr<const auralforge::dsp::FrozenBlackBoxFactory>
+AuralForgeAudioProcessor::resolveFrozenBlackBox(
+    const auralforge::graph::GraphNode &node) const {
+  if (node.artifactPath.empty())
+    return {};
+  const auto registry = std::atomic_load_explicit(&publishedFrozenArtifacts,
+                                                  std::memory_order_acquire);
+  if (registry == nullptr)
+    return {};
+  const auto found = registry->artifacts.find(node.artifactPath);
+  return found != registry->artifacts.end() ? found->second : nullptr;
 }
 
 void AuralForgeAudioProcessor::requestCurrentArchitecture(

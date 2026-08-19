@@ -1,0 +1,349 @@
+#pragma once
+
+#include "../graph/NodeGraph.h"
+
+#include <torch/torch.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace auralforge::dsp {
+/**
+ * @struct LiveGraphCompileOptions
+ * @brief Host and execution constraints used while compiling a graph snapshot.
+ */
+struct LiveGraphCompileOptions {
+  /** @brief Number of host input channels; only mono and stereo are supported.
+   */
+  int hostInputChannels = 2;
+  /** @brief Number of host output channels; only mono and stereo are supported.
+   */
+  int hostOutputChannels = 2;
+  /** @brief Largest audio block accepted by a prepared runtime. */
+  std::int64_t maximumBlockSize = 512;
+  /** @brief Largest per-element causal history accepted during compilation. */
+  std::uint64_t maximumHistorySamples = 1048576;
+};
+
+/**
+ * @class FrozenBlackBoxKernel
+ * @brief Per-runtime mutable executor for one preloaded frozen BlackBox.
+ *
+ * Instances are created off the audio thread by a FrozenBlackBoxFactory and are
+ * then owned by exactly one LiveGraphRuntime.
+ */
+class FrozenBlackBoxKernel {
+public:
+  /** @brief Allows destruction through the abstract kernel interface. */
+  virtual ~FrozenBlackBoxKernel() = default;
+
+  /**
+   * @brief Processes one tensor shaped [1, channels, samples].
+   * @param input Contiguous CPU float tensor for the current audio block.
+   * @return Tensor shaped [1, outputChannels, samples].
+   */
+  virtual torch::Tensor forward(const torch::Tensor &input) = 0;
+};
+
+/**
+ * @class FrozenBlackBoxFactory
+ * @brief Immutable metadata and off-thread constructor for a frozen hook.
+ */
+class FrozenBlackBoxFactory {
+public:
+  /** @brief Allows destruction through the abstract factory interface. */
+  virtual ~FrozenBlackBoxFactory() = default;
+
+  /** @brief Returns the exact input channel count accepted by the artifact. */
+  [[nodiscard]] virtual int getInputChannels() const noexcept = 0;
+
+  /** @brief Returns the exact output channel count produced by the artifact. */
+  [[nodiscard]] virtual int getOutputChannels() const noexcept = 0;
+
+  /** @brief Returns the artifact receptive field in samples. */
+  [[nodiscard]] virtual std::uint64_t getReceptiveField() const noexcept = 0;
+
+  /** @brief Returns the artifact trainable parameter count. */
+  [[nodiscard]] virtual std::uint64_t getParameterCount() const noexcept = 0;
+
+  /**
+   * @brief Reports whether an all-zero input is guaranteed to remain zero.
+   * @return True only when the artifact contract guarantees silence
+   * preservation.
+   */
+  [[nodiscard]] virtual bool preservesSilence() const noexcept = 0;
+
+  /**
+   * @brief Creates an inference kernel outside the audio callback.
+   * @return A prepared kernel, or null when the artifact cannot be loaded.
+   */
+  [[nodiscard]] virtual std::unique_ptr<FrozenBlackBoxKernel>
+  createKernel() const = 0;
+};
+
+/**
+ * @using FrozenBlackBoxResolver
+ * @brief Resolves a frozen graph node to immutable artifact metadata.
+ */
+using FrozenBlackBoxResolver =
+    std::function<std::shared_ptr<const FrozenBlackBoxFactory>(
+        const graph::GraphNode &)>;
+
+/**
+ * @enum LiveGraphErrorCode
+ * @brief Stable category for a graph compilation failure.
+ */
+enum class LiveGraphErrorCode {
+  /** @brief No failure occurred. */
+  none,
+  /** @brief Host channel or block constraints are unsupported. */
+  invalidCompileOptions,
+  /** @brief A node, pin, link, or identifier is malformed. */
+  invalidGraph,
+  /** @brief The graph does not contain exactly one input and output boundary.
+   */
+  invalidBoundary,
+  /** @brief A directed cycle prevents topological execution. */
+  cycle,
+  /** @brief Inferred channel dimensions are invalid or incompatible. */
+  invalidShape,
+  /** @brief An element property is absent or outside its valid range. */
+  invalidProperty,
+  /** @brief A frozen BlackBox cannot be safely represented or loaded. */
+  invalidBlackBox,
+  /** @brief A requested element cannot be randomized. */
+  invalidRandomization,
+  /** @brief The graph has no complete Audio Input-to-Output path. */
+  incompletePath,
+  /** @brief LibTorch failed while constructing an immutable snapshot. */
+  torchFailure
+};
+
+/**
+ * @struct LiveGraphCompileError
+ * @brief Detailed non-throwing result for a failed graph compilation.
+ */
+struct LiveGraphCompileError {
+  /** @brief Machine-readable failure category. */
+  LiveGraphErrorCode code = LiveGraphErrorCode::none;
+  /** @brief Node associated with the failure, or zero for graph-wide errors. */
+  std::int32_t nodeId = 0;
+  /** @brief Human-readable failure explanation suitable for the UI. */
+  std::string message;
+
+  /** @brief Returns true when this value represents a failure. */
+  [[nodiscard]] bool hasError() const noexcept {
+    return code != LiveGraphErrorCode::none;
+  }
+};
+
+/**
+ * @struct LiveGraphElementStatistics
+ * @brief Immutable shape and complexity metadata for one compiled element.
+ */
+struct LiveGraphElementStatistics {
+  /** @brief Stable source graph node identifier. */
+  std::int32_t nodeId = 0;
+  /** @brief Source graph element type. */
+  graph::NodeType type = graph::NodeType::activation;
+  /** @brief Exact inferred input channel count, or zero for Audio Input. */
+  int inputChannels = 0;
+  /** @brief Exact inferred output channel count, or zero for Audio Output. */
+  int outputChannels = 0;
+  /** @brief Element-local receptive field in samples. */
+  std::uint64_t receptiveField = 1;
+  /** @brief Number of mutable scalar parameters owned by the element. */
+  std::uint64_t parameterCount = 0;
+  /** @brief True when the live element supports deterministic randomization. */
+  bool randomizable = false;
+};
+
+class LiveGraphSnapshot;
+class LiveGraphRuntime;
+
+/**
+ * @struct LiveGraphCompileResult
+ * @brief Snapshot-or-error result returned by LiveGraphEngine.
+ */
+struct LiveGraphCompileResult {
+  /** @brief Immutable snapshot when compilation succeeded. */
+  std::shared_ptr<const LiveGraphSnapshot> snapshot;
+  /** @brief Failure details when snapshot is null. */
+  LiveGraphCompileError error;
+
+  /** @brief Returns true when an immutable snapshot was produced. */
+  [[nodiscard]] bool succeeded() const noexcept {
+    return snapshot != nullptr && !error.hasError();
+  }
+};
+
+/**
+ * @class LiveGraphSnapshot
+ * @brief Immutable, validated, topologically ordered live graph program.
+ *
+ * A snapshot contains immutable architecture and weight tensors. Mutable causal
+ * history and frozen kernels live in a separately prepared LiveGraphRuntime.
+ */
+class LiveGraphSnapshot final {
+public:
+  /** @brief Releases immutable implementation storage. */
+  ~LiveGraphSnapshot();
+
+  /** @brief Returns exact host input channels accepted by the snapshot. */
+  [[nodiscard]] int getInputChannels() const noexcept;
+
+  /** @brief Returns exact host output channels produced by the snapshot. */
+  [[nodiscard]] int getOutputChannels() const noexcept;
+
+  /** @brief Returns the maximum block size accepted by prepared runtimes. */
+  [[nodiscard]] std::int64_t getMaximumBlockSize() const noexcept;
+
+  /** @brief Returns the complete graph receptive field in samples. */
+  [[nodiscard]] std::uint64_t getReceptiveField() const noexcept;
+
+  /** @brief Returns the total mutable scalar parameter count. */
+  [[nodiscard]] std::uint64_t getParameterCount() const noexcept;
+
+  /** @brief Returns topologically ordered per-element statistics. */
+  [[nodiscard]] const std::vector<LiveGraphElementStatistics> &
+  getElementStatistics() const noexcept;
+
+  /**
+   * @brief Creates a new snapshot with exactly one weighted element randomized.
+   * @param nodeId Stable weighted graph node identifier.
+   * @param seed Signed deterministic element seed.
+   * @param error Receives a failure description when no snapshot is returned.
+   * @return New immutable snapshot; all non-target parameter tensors are shared
+   * unchanged with this snapshot.
+   */
+  [[nodiscard]] std::shared_ptr<const LiveGraphSnapshot>
+  withRandomizedElement(std::int32_t nodeId, std::int32_t seed,
+                        LiveGraphCompileError &error) const;
+
+private:
+  /** @brief Opaque immutable snapshot representation. */
+  struct Impl;
+
+  /**
+   * @brief Adopts a fully validated immutable implementation.
+   * @param implementationToAdopt Snapshot storage prepared by the compiler.
+   */
+  explicit LiveGraphSnapshot(std::shared_ptr<const Impl> implementationToAdopt);
+
+  /** @brief Immutable architecture, topology, metadata, and parameter storage.
+   */
+  std::shared_ptr<const Impl> implementation;
+
+  /** @brief Grants the compiler access to snapshot construction. */
+  friend class LiveGraphEngine;
+  /** @brief Grants prepared runtimes access to the immutable execution plan. */
+  friend class LiveGraphRuntime;
+};
+
+/**
+ * @class LiveGraphRuntime
+ * @brief Prepared mutable execution state paired with one immutable snapshot.
+ *
+ * Construct this object away from the audio callback, then atomically publish a
+ * shared_ptr to it. Exactly one audio thread may execute a runtime at a time.
+ */
+class LiveGraphRuntime final {
+public:
+  /** @brief Releases prepared histories and frozen kernels. */
+  ~LiveGraphRuntime();
+
+  /** @brief Returns the immutable snapshot executed by this runtime. */
+  [[nodiscard]] const std::shared_ptr<const LiveGraphSnapshot> &
+  getSnapshot() const noexcept;
+
+  /**
+   * @brief Executes one CPU float tensor shaped [1, channels, samples].
+   * @param input Current input block.
+   * @return Graph output with the same temporal length.
+   * @throws c10::Error When eager LibTorch inference fails.
+   */
+  torch::Tensor processTensor(const torch::Tensor &input);
+
+  /**
+   * @brief Processes planar host audio and clears output on any failure.
+   * @param inputChannels Array of readable planar channel pointers.
+   * @param inputChannelCount Number of readable host channels.
+   * @param outputChannels Array of writable planar channel pointers.
+   * @param outputChannelCount Number of writable host channels.
+   * @param sampleCount Number of samples in each channel.
+   * @return True when the graph produced a valid output block.
+   *
+   * This method performs no explicit C++ heap allocation after preparation,
+   * but eager LibTorch operators may allocate internal tensor storage.
+   */
+  bool processHost(const float *const *inputChannels,
+                   std::size_t inputChannelCount, float *const *outputChannels,
+                   std::size_t outputChannelCount,
+                   std::size_t sampleCount) noexcept;
+
+  /**
+   * @brief Returns the latest measured inference time for one frozen node.
+   * @param nodeId Stable graph node identifier.
+   * @return Per-buffer duration in milliseconds, or zero when unavailable.
+   */
+  [[nodiscard]] double
+  getFrozenInferenceTimeMilliseconds(std::int32_t nodeId) const noexcept;
+
+  /** @brief Clears causal history without changing architecture or weights. */
+  void reset() noexcept;
+
+private:
+  /** @brief Opaque mutable runtime representation. */
+  struct Impl;
+
+  /**
+   * @brief Adopts a fully prepared off-thread runtime implementation.
+   * @param implementationToAdopt Runtime storage and frozen kernels.
+   */
+  explicit LiveGraphRuntime(std::unique_ptr<Impl> implementationToAdopt);
+
+  /** @brief Mutable single-audio-thread histories, kernels, and host buffers.
+   */
+  std::unique_ptr<Impl> implementation;
+
+  /** @brief Grants the compiler access to runtime construction. */
+  friend class LiveGraphEngine;
+};
+
+/**
+ * @class LiveGraphEngine
+ * @brief Off-audio-thread compiler and runtime preparer for editable graphs.
+ */
+class LiveGraphEngine final {
+public:
+  /**
+   * @brief Validates and compiles an editable NodeGraph.
+   * @param graphDocument Message-thread graph document to snapshot.
+   * @param options Host shape and maximum block constraints.
+   * @param blackBoxResolver Optional resolver required by frozen graph nodes.
+   * @return Immutable snapshot or detailed validation failure.
+   *
+   * Unwired processing nodes are ignored. Only the Audio Input-to-Output path
+   * is executed. A missing complete path returns `incompletePath` rather than a
+   * validation error, so incomplete graphs may sit on the canvas.
+   */
+  [[nodiscard]] static LiveGraphCompileResult
+  compile(const graph::NodeGraph &graphDocument,
+          const LiveGraphCompileOptions &options,
+          FrozenBlackBoxResolver blackBoxResolver = {});
+
+  /**
+   * @brief Prepares causal state and frozen kernels off the audio thread.
+   * @param snapshot Valid immutable graph snapshot.
+   * @param error Receives preparation failure details.
+   * @return Runtime suitable for atomic shared_ptr publication.
+   */
+  [[nodiscard]] static std::shared_ptr<LiveGraphRuntime>
+  prepare(std::shared_ptr<const LiveGraphSnapshot> snapshot,
+          LiveGraphCompileError &error);
+};
+} // namespace auralforge::dsp

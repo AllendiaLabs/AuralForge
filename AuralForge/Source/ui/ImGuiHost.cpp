@@ -3,6 +3,7 @@
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
 
+#include <cmath>
 #include <utility>
 
 namespace auralforge::ui {
@@ -11,8 +12,7 @@ ImGuiHost::ImGuiHost(RenderCallback callback)
   setOpaque(true);
   setWantsKeyboardFocus(true);
   openGLContext.setRenderer(this);
-  openGLContext.setOpenGLVersionRequired(
-      juce::OpenGLContext::OpenGLVersion::openGL3_2);
+  openGLContext.setPreferredVersion(juce::OpenGLVersion{3, 2});
   openGLContext.setContinuousRepainting(true);
   openGLContext.setMultisamplingEnabled(true);
   openGLContext.attachTo(*this);
@@ -34,57 +34,59 @@ void ImGuiHost::mouseUp(const juce::MouseEvent &event) { updateMouse(event); }
 void ImGuiHost::mouseWheelMove(const juce::MouseEvent &event,
                                const juce::MouseWheelDetails &wheel) {
   updateMouse(event);
-  if (imguiContext == nullptr)
-    return;
+  const juce::ScopedLock lock(inputLock);
+  pendingInput.wheelX += wheel.deltaX;
+  pendingInput.wheelY += wheel.deltaY;
+}
 
-  ImGui::SetCurrentContext(imguiContext);
-  ImGui::GetIO().AddMouseWheelEvent(wheel.deltaX, wheel.deltaY);
+void ImGuiHost::mouseMagnify(const juce::MouseEvent &event, float scaleFactor) {
+  updateMouse(event);
+  if (!std::isfinite(scaleFactor) || scaleFactor <= 0.0f)
+    return;
+  auto current = pendingMagnification.load(std::memory_order_relaxed);
+  while (!pendingMagnification.compare_exchange_weak(
+      current, current * scaleFactor, std::memory_order_acq_rel,
+      std::memory_order_relaxed)) {
+  }
+}
+
+float ImGuiHost::takeMagnification() noexcept {
+  return pendingMagnification.exchange(1.0f, std::memory_order_acq_rel);
 }
 
 bool ImGuiHost::keyPressed(const juce::KeyPress &key) {
-  if (imguiContext == nullptr)
-    return false;
-
-  ImGui::SetCurrentContext(imguiContext);
   const auto modifiers = key.getModifiers();
-  auto &io = ImGui::GetIO();
-  io.AddKeyEvent(ImGuiMod_Ctrl, modifiers.isCtrlDown());
-  io.AddKeyEvent(ImGuiMod_Shift, modifiers.isShiftDown());
-  io.AddKeyEvent(ImGuiMod_Alt, modifiers.isAltDown());
-  io.AddKeyEvent(ImGuiMod_Super, modifiers.isCommandDown());
-  const auto character = key.getTextCharacter();
-  if (character > 0)
-    io.AddInputCharacter(static_cast<unsigned int>(character));
-  return io.WantCaptureKeyboard;
+  {
+    const juce::ScopedLock lock(inputLock);
+    pendingInput.modifiers = {modifiers.isCtrlDown(), modifiers.isShiftDown(),
+                              modifiers.isAltDown(), modifiers.isCommandDown()};
+    pendingInput.modifiersChanged = true;
+    const auto character = key.getTextCharacter();
+    if (character > 0)
+      pendingInput.characters.push_back(static_cast<unsigned int>(character));
+  }
+  return wantsKeyboardCapture.load(std::memory_order_acquire);
 }
 
 bool ImGuiHost::keyStateChanged(bool isKeyDown) {
   juce::ignoreUnused(isKeyDown);
-  if (imguiContext == nullptr)
-    return false;
-
-  ImGui::SetCurrentContext(imguiContext);
-  auto &io = ImGui::GetIO();
-  const auto forward = [&io](ImGuiKey key, int juceKey) {
-    io.AddKeyEvent(key, juce::KeyPress::isKeyCurrentlyDown(juceKey));
-  };
-
-  forward(ImGuiKey_Tab, juce::KeyPress::tabKey);
-  forward(ImGuiKey_LeftArrow, juce::KeyPress::leftKey);
-  forward(ImGuiKey_RightArrow, juce::KeyPress::rightKey);
-  forward(ImGuiKey_UpArrow, juce::KeyPress::upKey);
-  forward(ImGuiKey_DownArrow, juce::KeyPress::downKey);
-  forward(ImGuiKey_PageUp, juce::KeyPress::pageUpKey);
-  forward(ImGuiKey_PageDown, juce::KeyPress::pageDownKey);
-  forward(ImGuiKey_Home, juce::KeyPress::homeKey);
-  forward(ImGuiKey_End, juce::KeyPress::endKey);
-  forward(ImGuiKey_Insert, juce::KeyPress::insertKey);
-  forward(ImGuiKey_Delete, juce::KeyPress::deleteKey);
-  forward(ImGuiKey_Backspace, juce::KeyPress::backspaceKey);
-  forward(ImGuiKey_Space, juce::KeyPress::spaceKey);
-  forward(ImGuiKey_Enter, juce::KeyPress::returnKey);
-  forward(ImGuiKey_Escape, juce::KeyPress::escapeKey);
-  return io.WantCaptureKeyboard;
+  const std::array<int, 15> juceKeys{
+      juce::KeyPress::tabKey,      juce::KeyPress::leftKey,
+      juce::KeyPress::rightKey,    juce::KeyPress::upKey,
+      juce::KeyPress::downKey,     juce::KeyPress::pageUpKey,
+      juce::KeyPress::pageDownKey, juce::KeyPress::homeKey,
+      juce::KeyPress::endKey,      juce::KeyPress::insertKey,
+      juce::KeyPress::deleteKey,   juce::KeyPress::backspaceKey,
+      juce::KeyPress::spaceKey,    juce::KeyPress::returnKey,
+      juce::KeyPress::escapeKey};
+  {
+    const juce::ScopedLock lock(inputLock);
+    for (std::size_t index = 0; index < juceKeys.size(); ++index)
+      pendingInput.navigationKeys[index] =
+          juce::KeyPress::isKeyCurrentlyDown(juceKeys[index]);
+    pendingInput.navigationKeysChanged = true;
+  }
+  return wantsKeyboardCapture.load(std::memory_order_acquire);
 }
 
 void ImGuiHost::newOpenGLContextCreated() {
@@ -109,11 +111,13 @@ void ImGuiHost::renderOpenGL() {
   io.DisplaySize =
       ImVec2(static_cast<float>(getWidth()), static_cast<float>(getHeight()));
   io.DisplayFramebufferScale = ImVec2(scale, scale);
+  drainPendingInput();
 
   ImGui::NewFrame();
   if (renderCallback)
     renderCallback();
   ImGui::Render();
+  wantsKeyboardCapture.store(io.WantCaptureKeyboard, std::memory_order_release);
 
   juce::OpenGLHelpers::clear(juce::Colour(20, 23, 30));
   juce::gl::glViewport(
@@ -132,19 +136,68 @@ void ImGuiHost::openGLContextClosing() {
   imguiContext = nullptr;
 }
 
-void ImGuiHost::updateMouse(const juce::MouseEvent &event) {
-  if (imguiContext == nullptr)
-    return;
+void ImGuiHost::drainPendingInput() {
+  PendingInputState input;
+  {
+    const juce::ScopedLock lock(inputLock);
+    input = std::move(pendingInput);
+    pendingInput.mousePosition = input.mousePosition;
+    pendingInput.mouseButtons = input.mouseButtons;
+    pendingInput.modifiers = input.modifiers;
+    pendingInput.navigationKeys = input.navigationKeys;
+    pendingInput.characters.clear();
+    pendingInput.wheelX = 0.0f;
+    pendingInput.wheelY = 0.0f;
+    pendingInput.mousePositionChanged = false;
+    pendingInput.mouseButtonsChanged = false;
+    pendingInput.modifiersChanged = false;
+    pendingInput.navigationKeysChanged = false;
+  }
 
-  ImGui::SetCurrentContext(imguiContext);
-  ImGui::GetIO().AddMousePosEvent(event.position.x, event.position.y);
+  auto &io = ImGui::GetIO();
+  if (input.mousePositionChanged)
+    io.AddMousePosEvent(input.mousePosition.x, input.mousePosition.y);
+  if (input.mouseButtonsChanged) {
+    for (std::size_t index = 0; index < input.mouseButtons.size(); ++index)
+      io.AddMouseButtonEvent(static_cast<int>(index),
+                             input.mouseButtons[index]);
+  }
+  if (input.wheelX != 0.0f || input.wheelY != 0.0f)
+    io.AddMouseWheelEvent(input.wheelX, input.wheelY);
+  if (input.modifiersChanged) {
+    io.AddKeyEvent(ImGuiMod_Ctrl, input.modifiers[0]);
+    io.AddKeyEvent(ImGuiMod_Shift, input.modifiers[1]);
+    io.AddKeyEvent(ImGuiMod_Alt, input.modifiers[2]);
+    io.AddKeyEvent(ImGuiMod_Super, input.modifiers[3]);
+  }
+  if (input.navigationKeysChanged) {
+    const std::array<ImGuiKey, 15> keys{
+        ImGuiKey_Tab,      ImGuiKey_LeftArrow, ImGuiKey_RightArrow,
+        ImGuiKey_UpArrow,  ImGuiKey_DownArrow, ImGuiKey_PageUp,
+        ImGuiKey_PageDown, ImGuiKey_Home,      ImGuiKey_End,
+        ImGuiKey_Insert,   ImGuiKey_Delete,    ImGuiKey_Backspace,
+        ImGuiKey_Space,    ImGuiKey_Enter,     ImGuiKey_Escape};
+    for (std::size_t index = 0; index < keys.size(); ++index)
+      io.AddKeyEvent(keys[index], input.navigationKeys[index]);
+  }
+  for (const auto character : input.characters)
+    io.AddInputCharacter(character);
+}
+
+void ImGuiHost::updateMouse(const juce::MouseEvent &event) {
+  {
+    const juce::ScopedLock lock(inputLock);
+    pendingInput.mousePosition = event.position;
+    pendingInput.mousePositionChanged = true;
+  }
   updateButtons(event.mods);
 }
 
 void ImGuiHost::updateButtons(const juce::ModifierKeys &modifiers) {
-  auto &io = ImGui::GetIO();
-  io.AddMouseButtonEvent(0, modifiers.isLeftButtonDown());
-  io.AddMouseButtonEvent(1, modifiers.isRightButtonDown());
-  io.AddMouseButtonEvent(2, modifiers.isMiddleButtonDown());
+  const juce::ScopedLock lock(inputLock);
+  pendingInput.mouseButtons = {modifiers.isLeftButtonDown(),
+                               modifiers.isRightButtonDown(),
+                               modifiers.isMiddleButtonDown()};
+  pendingInput.mouseButtonsChanged = true;
 }
 } // namespace auralforge::ui

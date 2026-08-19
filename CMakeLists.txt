@@ -21,6 +21,11 @@ else()
 endif()
 
 find_package(Torch REQUIRED)
+if(NOT Python3_EXECUTABLE
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+    set(Python3_EXECUTABLE "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python")
+endif()
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 # LibTorch's CMake config injects GNU-ld-only flags (--no-as-needed) that Apple's linker rejects.
 if(APPLE)
@@ -41,7 +46,7 @@ endif()
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.91.9b
+    GIT_TAG v1.92.9b
     GIT_SHALLOW TRUE)
 FetchContent_Declare(
     imgui_node_editor
@@ -49,6 +54,36 @@ FetchContent_Declare(
     GIT_TAG 021aa0ea4da13fed864bafb2a92d4c5205076866
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(imgui imgui_node_editor)
+
+# imgui 1.91+ already provides float * ImVec2 when IMGUI_DEFINE_MATH_OPERATORS is
+# set. imgui-node-editor 021aa0e still emits its own copy.
+set(_auralforge_extra_math_h "${imgui_node_editor_SOURCE_DIR}/imgui_extra_math.h")
+set(_auralforge_extra_math_inl "${imgui_node_editor_SOURCE_DIR}/imgui_extra_math.inl")
+file(READ "${_auralforge_extra_math_h}" _auralforge_extra_math_h_src)
+if(NOT _auralforge_extra_math_h_src MATCHES "AURALFORGE_SKIP_FLOAT_IMVEC2_PRODUCT")
+    string(REPLACE
+        "inline ImVec2 operator*(const float lhs, const ImVec2& rhs);"
+        "# if IMGUI_VERSION_NUM < 19100 /* AURALFORGE_SKIP_FLOAT_IMVEC2_PRODUCT */\ninline ImVec2 operator*(const float lhs, const ImVec2& rhs);\n# endif"
+        _auralforge_extra_math_h_src "${_auralforge_extra_math_h_src}")
+    file(WRITE "${_auralforge_extra_math_h}" "${_auralforge_extra_math_h_src}")
+    file(READ "${_auralforge_extra_math_inl}" _auralforge_extra_math_inl_src)
+    string(REPLACE
+        "inline ImVec2 operator*(const float lhs, const ImVec2& rhs)\n{\n    return ImVec2(lhs * rhs.x, lhs * rhs.y);\n}"
+        "# if IMGUI_VERSION_NUM < 19100 /* AURALFORGE_SKIP_FLOAT_IMVEC2_PRODUCT */\ninline ImVec2 operator*(const float lhs, const ImVec2& rhs)\n{\n    return ImVec2(lhs * rhs.x, lhs * rhs.y);\n}\n# endif"
+        _auralforge_extra_math_inl_src "${_auralforge_extra_math_inl_src}")
+    file(WRITE "${_auralforge_extra_math_inl}" "${_auralforge_extra_math_inl_src}")
+endif()
+
+# Public NavigateTo(..., zoomIn=false) only recentres. Exact mode keeps zoom.
+set(_auralforge_ne_internal "${imgui_node_editor_SOURCE_DIR}/imgui_node_editor_internal.h")
+file(READ "${_auralforge_ne_internal}" _auralforge_ne_internal_src)
+if(NOT _auralforge_ne_internal_src MATCHES "AURALFORGE_NAVIGATE_EXACT")
+    string(REPLACE
+        "auto zoomMode = zoomIn ? NavigateAction::ZoomMode::WithMargin : NavigateAction::ZoomMode::None;"
+        "auto zoomMode = zoomIn ? NavigateAction::ZoomMode::WithMargin : NavigateAction::ZoomMode::Exact; /* AURALFORGE_NAVIGATE_EXACT */"
+        _auralforge_ne_internal_src "${_auralforge_ne_internal_src}")
+    file(WRITE "${_auralforge_ne_internal}" "${_auralforge_ne_internal_src}")
+endif()
 
 add_library(auralforge_imgui STATIC
     "${imgui_SOURCE_DIR}/imgui.cpp"
@@ -64,6 +99,7 @@ target_include_directories(auralforge_imgui PUBLIC
     "${imgui_SOURCE_DIR}"
     "${imgui_SOURCE_DIR}/backends"
     "${imgui_node_editor_SOURCE_DIR}")
+target_compile_definitions(auralforge_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
 target_link_libraries(auralforge_imgui PUBLIC juce::juce_opengl)
 
 juce_add_plugin(AuralForge
@@ -84,12 +120,19 @@ juce_add_plugin(AuralForge
 
 juce_generate_juce_header(AuralForge)
 
+juce_add_binary_data(AuralForgeResources
+    SOURCES Backend/freeze_worker.py)
+
 target_sources(AuralForge PRIVATE
     AuralForge/Source/PluginEditor.cpp
     AuralForge/Source/PluginProcessor.cpp
+    AuralForge/Source/dsp/LiveGraphEngine.cpp
+    AuralForge/Source/dsp/LiveGraphPublisher.cpp
     AuralForge/Source/dsp/LookbackBuffer.cpp
     AuralForge/Source/dsp/TCNModel.cpp
+    AuralForge/Source/dsp/TorchScriptBlackBox.cpp
     AuralForge/Source/dsp/WeightRandomizer.cpp
+    AuralForge/Source/freeze/FreezeCoordinator.cpp
     AuralForge/Source/graph/NodeGraph.cpp
     AuralForge/Source/graph/NodeRenderer.cpp
     AuralForge/Source/params/ParamLayout.cpp
@@ -102,6 +145,7 @@ target_include_directories(AuralForge PRIVATE
     "${TORCH_INCLUDE_DIRS}")
 
 target_compile_definitions(AuralForge PUBLIC
+    AURALFORGE_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
@@ -111,6 +155,7 @@ target_compile_options(AuralForge PRIVATE
     $<$<CXX_COMPILER_ID:AppleClang,Clang>:-Wall -Wextra -Wpedantic>)
 
 target_link_libraries(AuralForge PRIVATE
+    AuralForgeResources
     auralforge_imgui
     "${TORCH_LIBRARIES}"
     juce::juce_audio_utils
@@ -164,10 +209,31 @@ if(BUILD_TESTING)
         "${TORCH_INCLUDE_DIRS}")
     target_link_libraries(AuralForgeProcessorTests PRIVATE
         AuralForge
+        AuralForgeResources
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_opengl
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
     add_test(NAME AuralForgeProcessor COMMAND AuralForgeProcessorTests)
+
+    juce_add_console_app(AuralForgeLiveGraphTests PRODUCT_NAME "AuralForge Live Graph Tests")
+    target_sources(AuralForgeLiveGraphTests PRIVATE Tests/LiveGraphEngineTests.cpp)
+    target_include_directories(AuralForgeLiveGraphTests BEFORE PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/AuralForge_artefacts/JuceLibraryCode"
+        AuralForge/Source
+        "${TORCH_INCLUDE_DIRS}")
+    target_link_libraries(AuralForgeLiveGraphTests PRIVATE
+        AuralForge
+        AuralForgeResources
+        juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_opengl
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+    add_test(NAME AuralForgeLiveGraph COMMAND AuralForgeLiveGraphTests)
+
+    add_test(NAME AuralForgeFreezeWorker
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_freeze_worker.py")
 endif()

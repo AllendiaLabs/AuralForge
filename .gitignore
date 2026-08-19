@@ -2,6 +2,8 @@
 
 # specify python cache
 .specify/scripts/python/__pycache__/
+__pycache__/
+*.pyc
 
 # cursor files
 .cursor/

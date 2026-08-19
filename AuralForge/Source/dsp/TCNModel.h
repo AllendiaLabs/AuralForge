@@ -14,6 +14,8 @@ struct TCNConfiguration {
   int depth = 4;
   int kernelSize = 3;
   int channels = 16;
+  /** @brief Base dilation multiplied by each layer's power-of-two schedule. */
+  int dilation = 1;
   int inputChannels = 2;
   int outputChannels = 2;
   ActivationType activation = ActivationType::relu;

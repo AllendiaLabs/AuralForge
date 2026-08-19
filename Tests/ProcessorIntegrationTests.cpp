@@ -1,9 +1,9 @@
 #include "PluginProcessor.h"
+#include "graph/NodeGraph.h"
 
 #include <JuceHeader.h>
 
-#include <cmath>
-#include <iostream>
+#include <vector>
 
 namespace {
 /**
@@ -32,6 +32,23 @@ bool expect(bool condition, const char *message) {
     std::cerr << "FAIL: " << message << '\n';
   return condition;
 }
+
+/**
+ * @brief Waits for asynchronous graph compilation to publish its runtime.
+ * @param processor Processor owning the background graph publisher.
+ * @param expectedReceptiveField Receptive field identifying the test graph.
+ * @return True when the graph runtime becomes observable before timeout.
+ */
+bool waitForGraphRuntime(AuralForgeAudioProcessor &processor,
+                         std::uint64_t expectedReceptiveField) {
+  constexpr int attempts = 200;
+  for (int attempt = 0; attempt < attempts; ++attempt) {
+    if (processor.getReceptiveFieldSamples() == expectedReceptiveField)
+      return true;
+    juce::Thread::sleep(10);
+  }
+  return false;
+}
 } // namespace
 
 /**
@@ -45,8 +62,93 @@ int main() {
   juce::MidiBuffer midi;
   bool passed = true;
 
+  auralforge::graph::NodeGraph graph;
+  const auto inputNode =
+      graph.addNode(auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+  const auto convolutionNode =
+      graph.addNode(auralforge::graph::NodeType::convolution, {200.0f, 0.0f});
+  const auto outputNode =
+      graph.addNode(auralforge::graph::NodeType::audioOutput, {400.0f, 0.0f});
+  const auto *inputElement = graph.findNode(inputNode);
+  const auto *convolutionElement = graph.findNode(convolutionNode);
+  const auto *outputElement = graph.findNode(outputNode);
+  passed &= expect(inputElement != nullptr && convolutionElement != nullptr &&
+                       outputElement != nullptr,
+                   "graph palette elements must receive stable identifiers");
+  passed &= expect(!graph.removeNode(inputNode) && !graph.removeNode(outputNode),
+                   "fixed stereo audio I/O must refuse deletion");
+  if (inputElement != nullptr && convolutionElement != nullptr &&
+      outputElement != nullptr) {
+    passed &= expect(graph
+                         .connect(inputElement->outputs.front().id,
+                                  convolutionElement->inputs.front().id)
+                         .accepted,
+                     "compatible output-to-input link must commit");
+    passed &= expect(graph
+                         .connect(convolutionElement->outputs.front().id,
+                                  outputElement->inputs.front().id)
+                         .accepted,
+                     "compatible processing-to-output link must commit");
+    passed &=
+        expect(!graph
+                    .connect(convolutionElement->outputs.front().id,
+                             convolutionElement->inputs.front().id)
+                    .accepted,
+               "self-cycle must be rejected before it reaches runtime state");
+  }
+  graph.setSeed(convolutionNode, 123456);
+  const auto extraConvolution =
+      graph.addNode(auralforge::graph::NodeType::convolution, {200.0f, 80.0f});
+  const auto freezeChains =
+      graph.partitionFreezeChains({convolutionNode, extraConvolution});
+  passed &=
+      expect(freezeChains.size() == 2,
+             "disconnected freeze selections must form independent chains");
+  passed &= expect(graph.removeNode(extraConvolution),
+                   "temporary extra convolution must be removable");
+  const auto freezeRequest = graph.createFreezeRequest({convolutionNode});
+  passed &= expect(freezeRequest.has_value(),
+                   "connected live selection must serialize for freezing");
+  if (freezeRequest.has_value()) {
+    const auto payload =
+        juce::JSON::parse(juce::String(freezeRequest->graphFragment));
+    const auto fragment = payload.getProperty("graph_fragment", {});
+    const auto elements = fragment.getProperty("elements", {});
+    passed &= expect(payload.getProperty("operation", {}).toString() ==
+                             "freeze_selection" &&
+                         elements.isArray() && elements.getArray()->size() == 1,
+                     "freeze JSON must contain only the selected graph");
+
+    auralforge::graph::FreezeSelectionResult freezeResult;
+    freezeResult.requestId = freezeRequest->requestId;
+    freezeResult.succeeded = true;
+    freezeResult.artifactPath = "/tmp/auralforge-test-blackbox.pt";
+    freezeResult.inputChannels = 2;
+    freezeResult.outputChannels = 2;
+    const auto frozen =
+        graph.freezeSelection({convolutionNode}, freezeResult);
+    passed &= expect(frozen.has_value() && graph.getNodes().size() == 3,
+                     "successful freeze must keep elements in place");
+    passed &= expect(
+        frozen.has_value() && graph.findNode(*frozen) != nullptr &&
+            graph.findNode(*frozen)->state ==
+                auralforge::graph::NodeState::frozenGold,
+        "frozen elements must use the Gold colour state");
+    passed &= expect(
+        frozen.has_value() && graph.findNode(*frozen) != nullptr &&
+            graph.findNode(*frozen)->metrics.has_value(),
+        "compile and inference times must be written on the frozen chain sink");
+    passed &=
+        expect(frozen.has_value() && graph.unfreeze(*frozen) &&
+                   graph.getNodes().size() == 3 && graph.getLinks().size() == 2,
+               "unfreeze must restore the prior live elements in place");
+  }
+
   AuralForgeAudioProcessor original;
+  original.setGraphState(graph.toValueTree());
   original.prepareToPlay(sampleRate, blockSize);
+  passed &= expect(waitForGraphRuntime(original, 3),
+                   "live graph must compile before audio assertions");
 
   juce::AudioBuffer<float> input(2, blockSize);
   fillSine(input, sampleRate);
@@ -80,6 +182,8 @@ int main() {
   restored.setStateInformation(savedState.getData(),
                                static_cast<int>(savedState.getSize()));
   restored.prepareToPlay(sampleRate, blockSize);
+  passed &= expect(waitForGraphRuntime(restored, 3),
+                   "restored graph must compile before recall assertions");
   auto actualRecall = input;
   restored.processBlock(actualRecall, midi);
 
@@ -95,6 +199,80 @@ int main() {
   passed &= expect(
       recallDifference < 1.0e-6f,
       "serialized parameters and weights must restore exact sonic state");
+
+  auralforge::graph::NodeGraph restoredGraph;
+  passed &=
+      expect(restoredGraph.restoreFromValueTree(restored.getGraphState()),
+             "serialized processor state must restore the graph document");
+  const auto *restoredConvolution = restoredGraph.findNode(convolutionNode);
+  passed &= expect(restoredConvolution != nullptr &&
+                       restoredConvolution->seed == 123456,
+                   "signed per-element randomization seed must survive recall");
+
+  if (restoredConvolution != nullptr) {
+    restoredGraph.setProperty(restoredConvolution->id, "dilation", 2);
+    restored.setGraphState(restoredGraph.toValueTree());
+    passed &= expect(waitForGraphRuntime(restored, 5),
+                     "edited graph must publish a replacement runtime");
+    auto transition = input;
+    restored.processBlock(transition, midi);
+    auto transitionIsFinite = true;
+    for (int channel = 0; channel < transition.getNumChannels(); ++channel) {
+      for (int sample = 0; sample < transition.getNumSamples(); ++sample)
+        transitionIsFinite &=
+            std::isfinite(transition.getSample(channel, sample));
+    }
+    passed &= expect(
+        transitionIsFinite &&
+            transition.getMagnitude(0, 0, transition.getNumSamples()) > 0.0f,
+        "atomic graph replacement must crossfade to finite non-silent audio");
+  }
+
+  juce::AudioBuffer<float> dcInput(2, blockSize);
+  for (int iteration = 0; iteration < 64; ++iteration) {
+    for (int channel = 0; channel < dcInput.getNumChannels(); ++channel)
+      dcInput.clear(channel, 0, blockSize);
+    for (int channel = 0; channel < dcInput.getNumChannels(); ++channel)
+      juce::FloatVectorOperations::fill(dcInput.getWritePointer(channel), 0.2f,
+                                        blockSize);
+    restored.processBlock(dcInput, midi);
+  }
+  double dcMean = 0.0;
+  for (int sample = 0; sample < blockSize; ++sample)
+    dcMean += dcInput.getSample(0, sample);
+  dcMean = std::abs(dcMean / static_cast<double>(blockSize));
+  passed &= expect(dcMean < 0.001,
+                   "post-graph DC blocker must reject sustained offset");
+
+  auralforge::graph::NodeGraph disconnected;
+  passed &=
+      expect(disconnected.restoreFromValueTree(restored.getGraphState()),
+             "connected graph state must restore for the silence check");
+  std::vector<std::int32_t> outputLinks;
+  for (const auto &link : disconnected.getLinks()) {
+    const auto destination = disconnected.findNodeForPin(link.destinationPinId);
+    const auto *destinationNode =
+        destination.has_value() ? disconnected.findNode(*destination) : nullptr;
+    if (destinationNode != nullptr &&
+        destinationNode->type == auralforge::graph::NodeType::audioOutput)
+      outputLinks.push_back(link.id);
+  }
+  for (const auto linkId : outputLinks)
+    disconnected.removeLink(linkId);
+  restored.setGraphState(disconnected.toValueTree());
+  bool graphWentSilent = false;
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    if (restored.getReceptiveFieldSamples() == 0)
+      graphWentSilent = true;
+    if (graphWentSilent)
+      break;
+    juce::Thread::sleep(10);
+  }
+  auto muted = input;
+  restored.processBlock(muted, midi);
+  passed &= expect(graphWentSilent &&
+                       muted.getMagnitude(0, 0, muted.getNumSamples()) == 0.0f,
+                   "audio output with no input must produce silence");
 
   if (passed)
     std::cout << "AuralForge processor integration tests passed\n";

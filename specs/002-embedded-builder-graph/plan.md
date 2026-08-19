@@ -65,12 +65,21 @@ AuralForge/
 │   ├── PluginProcessor.cpp
 │   ├── PluginProcessor.h
 │   ├── dsp/
+│   │   ├── LiveGraphEngine.cpp
+│   │   ├── LiveGraphEngine.h
+│   │   ├── LiveGraphPublisher.cpp
+│   │   ├── LiveGraphPublisher.h
 │   │   ├── LookbackBuffer.cpp
 │   │   ├── LookbackBuffer.h
 │   │   ├── TCNModel.cpp
 │   │   ├── TCNModel.h
+│   │   ├── TorchScriptBlackBox.cpp
+│   │   ├── TorchScriptBlackBox.h
 │   │   ├── WeightRandomizer.cpp
 │   │   └── WeightRandomizer.h
+│   ├── freeze/
+│   │   ├── FreezeCoordinator.cpp
+│   │   └── FreezeCoordinator.h
 │   ├── graph/
 │   │   ├── GraphTypes.h
 │   │   ├── NodeGraph.cpp
@@ -94,8 +103,13 @@ AuralForge/
 └── AuralForge.jucer
 
 Tests/
+├── LiveGraphEngineTests.cpp
 ├── ProcessorIntegrationTests.cpp
-└── TCNModelTests.cpp
+├── TCNModelTests.cpp
+└── test_freeze_worker.py
+
+Backend/
+└── freeze_worker.py
 ```
 
 **Structure Decision**: Keep the existing single-plugin structure. Feature work concentrates in `AuralForge/Source/graph`, `AuralForge/Source/ui`, `AuralForge/Source/dsp`, `AuralForge/Source/params`, and targeted integration coverage in `Tests/`.
