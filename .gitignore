@@ -1,10 +1,19 @@
 ### Project specific files ###
 
+# specify python cache
+.specify/scripts/python/__pycache__/
+
 # cursor files
 .cursor/
 
-# ml-forge
-ml_forge-main/
+# ignore files
+.ignore/
+
+# build files
+*/Builds/
+
+# juce library code
+*/JuceLibraryCode/
 
 ### General files ###
 
