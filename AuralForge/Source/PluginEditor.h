@@ -1,33 +1,42 @@
-/*
-  ==============================================================================
-
-    This file contains the basic framework code for a JUCE plugin editor.
-
-  ==============================================================================
-*/
-
 #pragma once
 
-#include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include "graph/NodeGraph.h"
+#include "graph/NodeRenderer.h"
+#include "ui/ImGuiHost.h"
+#include "ui/InfoPanel.h"
+#include "ui/RandomizeButton.h"
+#include <JuceHeader.h>
 
-//==============================================================================
 /**
-*/
-class AuralForgeAudioProcessorEditor  : public juce::AudioProcessorEditor
-{
+ * @class AuralForgeAudioProcessorEditor
+ * @brief Resizable Dear ImGui editor for TCN controls and graph visualization.
+ */
+class AuralForgeAudioProcessorEditor final : public juce::AudioProcessorEditor {
 public:
-    AuralForgeAudioProcessorEditor (AuralForgeAudioProcessor&);
-    ~AuralForgeAudioProcessorEditor() override;
+  /** @brief Creates and attaches the OpenGL-backed editor. */
+  AuralForgeAudioProcessorEditor(AuralForgeAudioProcessor &);
+  /** @brief Releases editor resources before the processor. */
+  ~AuralForgeAudioProcessorEditor() override;
 
-    //==============================================================================
-    void paint (juce::Graphics&) override;
-    void resized() override;
+  /** @brief Paints the fallback JUCE background behind OpenGL. */
+  void paint(juce::Graphics &) override;
+  /** @brief Fits the ImGui host to the complete editor area. */
+  void resized() override;
 
 private:
-    // This reference is provided as a quick way for your editor to
-    // access the processor object that created it.
-    AuralForgeAudioProcessor& audioProcessor;
+  void renderFrame();
+  void renderParameters();
+  void updateGraphIfNeeded();
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AuralForgeAudioProcessorEditor)
+  AuralForgeAudioProcessor &audioProcessor;
+  auralforge::graph::NodeGraph nodeGraph;
+  auralforge::ui::InfoPanel infoPanel;
+  auralforge::ui::RandomizeButton randomizeButton;
+  auralforge::ui::ImGuiHost imguiHost;
+  auralforge::graph::NodeRenderer nodeRenderer;
+  auralforge::dsp::TCNConfiguration displayedConfiguration;
+  bool graphInitialized = false;
+
+  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AuralForgeAudioProcessorEditor)
 };

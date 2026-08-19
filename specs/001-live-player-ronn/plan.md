@@ -22,9 +22,9 @@ Build a VST3/AU audio effect plugin using JUCE + LibTorch (C++ API) + Dear ImGui
 
 **Project Type**: Audio plugin (VST3/AU effect)
 
-**Performance Goals**: <7 ms latency at 256-sample buffer on Intel i7; 60 FPS UI; weight swap <100 ms
+**Performance Goals**: <7 ms processing time at 256-sample buffer on Intel i7; 60 FPS UI; weight swap <100 ms. These are release benchmarks, not properties inferred from a successful build.
 
-**Constraints**: Zero memory allocations on real-time audio thread; atomic pointer swap for weight changes; causal processing only (no look-ahead)
+**Constraints**: Zero plugin-owned memory allocations on the real-time audio thread; causal processing only (no look-ahead). Strict allocator-level zero-allocation is a separate unresolved gate because standard LibTorch operators create intermediate tensors, and C++17 atomic `shared_ptr` operations are not guaranteed lock-free.
 
 **Scale/Scope**: Single plugin, ~15–20 source files, 1 TCN model architecture
 
@@ -92,4 +92,8 @@ CMakeLists.txt                      # Top-level CMake build at repository root
 
 ## Complexity Tracking
 
-No constitution violations — table not needed.
+| Gate | Current status | Required follow-up |
+|------|----------------|--------------------|
+| Hard real-time allocation safety | OPEN | Instrument the audio callback and replace/reshape standard LibTorch forward execution if intermediate allocations occur. |
+| Lock-free model lifetime handoff | OPEN | Replace C++17 atomic `shared_ptr` publication with an audio-safe ownership/reclamation scheme if instrumentation shows locks or audio-thread destruction. |
+| DAW validation | OPEN | Run Steinberg validator, installed-component `auval`, and representative DAW lifecycle tests on release artifacts. |

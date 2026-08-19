@@ -6,6 +6,13 @@
 # cursor files
 .cursor/
 
+# libtorch
+libtorch/
+
+# env
+.venv/
+.env/
+
 # ignore files
 .ignore/
 
@@ -62,6 +69,9 @@
 build/
 Build/
 build-*/
+bin/
+obj/
+out/
 
 # CMake generated files
 CMakeFiles/
@@ -76,6 +86,11 @@ compile_commands.json
 *.log
 *.bak
 *.swp
+.DS_Store
+Thumbs.db
+.env*
+.vscode/
+.idea/
 
 # vcpkg
 vcpkg_installed/

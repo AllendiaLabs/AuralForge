@@ -115,3 +115,35 @@ auval -v aufx Afge Afge
 | Extreme depth | Set depth to 50 | Plugin works; UI warns about large receptive field |
 | Sample rate change | Switch DAW sample rate 44.1→96 kHz | Plugin reinitializes without crash |
 | Tiny buffer | Set buffer to 32 samples | Audio processes correctly (may have higher CPU) |
+
+## Implementation Validation Results (2026-08-19)
+
+- **V1 — automated core path PASS**: the processor integration test constructs the
+  default stereo TCN, processes a 256-sample block, and verifies non-silent output
+  that differs from the dry input. DAW insertion remains a manual release check.
+- **V2 — implementation complete, manual DAW check pending**: architecture parameters
+  coalesce onto the message thread and publish immutable model/runtime snapshots.
+- **V3 — deterministic core PASS, manual automation check pending**: equal
+  seed/counter/architecture values produce byte-identical tensors; UI, MIDI CC, and
+  host parameter trigger paths are implemented.
+- **V4 — implementation complete, visual host check pending**: the Dear ImGui node
+  editor renders the ML Forge-style node/link model and updates from APVTS values.
+- **V5 — automated PASS**: processor state round-trip restores parameters and serialized
+  model weights with sample-exact output from a reset history.
+- **V6 — per-instance audit PASS, four-instance DAW load pending**: processor, model,
+  randomization counter, history, and UI contexts are instance-owned.
+- **V7 — build/signing PASS, external validators pending**: Debug VST3 and AU bundles
+  compile and pass strict macOS code-signature verification. Steinberg validator and
+  installed-component `auval` remain release-environment checks.
+- **V8 — implementation complete, visual timing check pending**: metrics are read from
+  the published model and rendered every frame.
+- **V9 — automated silence PASS**: digital silence remains digital silence. Sample-rate,
+  extreme-depth warning, and tiny-buffer paths are implemented; host-driven manual
+  checks remain pending.
+
+Automated command:
+
+```bash
+cmake --build build --target AuralForgeTests AuralForgeProcessorTests
+ctest --test-dir build --output-on-failure
+```
