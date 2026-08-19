@@ -1,16 +1,9 @@
 <!--
 Sync Impact Report
-- Version change: 0.0.0 → 1.0.0
-- Added sections: All (initial ratification)
-  - Principle I: Single Interface, Decoupled Compute
-  - Principle II: Dual-Engine Execution Model (Live + Frozen)
-  - Principle III: Manual Granular Freeze Policy
-  - Principle IV: Shape Integrity & Legal Constraints
-- Added section: Architectural Mandate
-- Added section: Phased Rollout Strategy
-- Added section: Performance Benchmarks
-- Added section: Legal & Governance Constraints
-- Added section: Governance
+- Version change: 1.0.0 → 1.1.0
+- Modified sections:
+  - Phased Rollout Strategy: added Phase 2.2 sub-phase
+- Added sections: None
 - Removed sections: None
 - Deferred TODOs: None
 -->
@@ -92,6 +85,14 @@ The UI is the primary gatekeeper against illegal operations and legal liability:
 - Goal: Integrate node graph and Python backend for compiling frozen nodes.
 - Features: Full node palette; Freeze via right-click; Python backend listens for JSON, constructs `torch.nn.Module`, traces it, returns `.pt`; progress spinner; shape violation UI.
 
+**Phase 2.2: "Signal Analysis & Expressive Input Controls"**
+- Goal: Extend the embedded graph builder with per-element analysis views and richer parameter input modalities beyond inline text fields.
+- Features:
+  - **Per-Element Visualization Graphs**: Each element MUST expose analysis views showing the cumulative sound transformation up to that point in the graph (e.g., transfer function, frequency response, and related analysis plots). Left and right channels MUST be displayed on the same plots for direct comparison.
+  - **Activation & TCN Gain Control**: Activation-function and TCN elements MUST expose a gain parameter that controls the slope of the nonlinearity, enabling real-time shaping of transfer-characteristic steepness.
+  - **Knob Inputs**: Parameter editing MUST support rotary knob controls as an alternative to text inputs for continuous parameters.
+  - **XY Trackpad**: Parameter editing MUST support an XY trackpad input for two-axis simultaneous control of paired parameters.
+
 **Phase 3: "Steerable Discovery & Training"**
 - Goal: Enable training of conditional models.
 - Features: "Capture Samples" button; "Train" button sends architecture + samples to backend; trained model auto-loaded as Gold Frozen BlackBox.
@@ -138,4 +139,4 @@ This constitution serves as the single source of truth for all technical decisio
 3. Blue = Live (glitchable, randomizable). Gold = Frozen (optimized, stable).
 4. Zero audio-thread allocations. All graph modifications prepared on GUI thread and swapped atomically.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-19 | **Last Amended**: 2026-08-19
+**Version**: 1.1.0 | **Ratified**: 2026-08-19 | **Last Amended**: 2026-08-19
