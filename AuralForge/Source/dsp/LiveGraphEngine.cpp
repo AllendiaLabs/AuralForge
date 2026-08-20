@@ -402,7 +402,7 @@ struct LiveGraphSnapshot::Impl {
   /** @brief Host sample rate copied from compile options. */
   double sampleRate = 44100.0;
   /** @brief Linear control-ramp duration in seconds. */
-  double controlRampSeconds = 0.15;
+  double controlRampSeconds = controlRampSecondsDefault;
 };
 
 /** @brief Mutable implementation backing LiveGraphRuntime. */

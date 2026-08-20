@@ -127,6 +127,11 @@ void AuralForgeAudioProcessor::prepareToPlay(double sampleRate,
                                  true);
   prepared.store(true, std::memory_order_release);
 
+  dryWetSmoother.reset(sampleRate,
+                       auralforge::dsp::controlRampSecondsDefault);
+  if (auto *mix = parameters.getRawParameterValue(auralforge::params::dryWet))
+    dryWetSmoother.setCurrentAndTargetValue(mix->load());
+
   auto snapshot = modelBuilder.getPublishedModel();
   const auto configuration = getRequestedConfiguration();
   if (snapshot == nullptr ||
@@ -203,6 +208,8 @@ void AuralForgeAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
   }
 
+  syncDryWetSmoother();
+
   float graphInputPeak = 0.0f;
   for (int channel = 0; channel < inputChannels; ++channel)
     graphInputPeak =
@@ -217,6 +224,7 @@ void AuralForgeAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       buffer.clear();
       graphDcInput.fill(0.0f);
       graphDcOutput.fill(0.0f);
+      dryWetSmoother.skip(numSamples);
       return;
     }
   }
@@ -226,16 +234,12 @@ void AuralForgeAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
   graphDcInput.fill(0.0f);
   graphDcOutput.fill(0.0f);
-  const auto dryWet =
-      parameters.getRawParameterValue(auralforge::params::dryWet)->load();
-  if (dryWet >= 1.0f - 1.0e-6f)
-    buffer.clear();
-  else if (dryWet > 1.0e-6f) {
-    for (int channel = 0; channel < outputChannels; ++channel) {
-      auto *samples = buffer.getWritePointer(channel);
-      for (int sample = 0; sample < numSamples; ++sample)
-        samples[sample] *= (1.0f - dryWet);
-    }
+  for (int sample = 0; sample < numSamples; ++sample) {
+    const auto dryWet = dryWetSmoother.getNextValue();
+    const auto dryGain = 1.0f - dryWet;
+    for (int channel = 0; channel < outputChannels; ++channel)
+      buffer.setSample(channel, sample,
+                       buffer.getSample(channel, sample) * dryGain);
   }
 }
 
@@ -696,14 +700,13 @@ bool AuralForgeAudioProcessor::processLiveGraph(
     graphCrossfadeSamplesRemaining = 0;
   }
 
-  const auto dryWet =
-      parameters.getRawParameterValue(auralforge::params::dryWet)->load();
   for (int sample = 0; sample < numSamples; ++sample) {
     const auto fade =
         useCrossfade && graphCrossfadeSamplesRemaining > 0
             ? 1.0f - static_cast<float>(graphCrossfadeSamplesRemaining) /
                          static_cast<float>(modelCrossfadeSamples)
             : 1.0f;
+    const auto mix = dryWetSmoother.getNextValue();
     for (int channel = 0; channel < outputChannels; ++channel) {
       auto processed = graphWetBuffer.getSample(channel, sample);
       if (useCrossfade) {
@@ -711,7 +714,7 @@ bool AuralForgeAudioProcessor::processLiveGraph(
         processed = previous + fade * (processed - previous);
       }
       const auto dry = buffer.getSample(channel, sample);
-      buffer.setSample(channel, sample, dry + dryWet * (processed - dry));
+      buffer.setSample(channel, sample, dry + mix * (processed - dry));
     }
     if (graphCrossfadeSamplesRemaining > 0)
       --graphCrossfadeSamplesRemaining;
@@ -759,6 +762,11 @@ void AuralForgeAudioProcessor::applyDcBlocker(std::array<float, 2> &inputState,
     inputState[static_cast<std::size_t>(channel)] = previousInput;
     outputState[static_cast<std::size_t>(channel)] = previousOutput;
   }
+}
+
+void AuralForgeAudioProcessor::syncDryWetSmoother() noexcept {
+  if (auto *mix = parameters.getRawParameterValue(auralforge::params::dryWet))
+    dryWetSmoother.setTargetValue(mix->load());
 }
 
 void AuralForgeAudioProcessor::requestGraphCompile() {

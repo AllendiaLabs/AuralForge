@@ -140,6 +140,8 @@ private:
   std::uint64_t analysisRevision = 0;
   /** @brief Dear ImGui time of the last analysis computation. */
   double lastAnalysisTime = 0.0;
+  /** @brief True while the Dry/Wet slider is recording a host gesture. */
+  bool dryWetGestureActive = false;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AuralForgeAudioProcessorEditor)
 };

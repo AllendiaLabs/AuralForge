@@ -267,6 +267,10 @@ private:
   /** @brief Queues the latest persisted graph for off-thread compilation. */
   void requestGraphCompile();
   /**
+   * @brief Points the Dry/Wet smoother at the current host parameter.
+   */
+  void syncDryWetSmoother() noexcept;
+  /**
    * @brief Resolves a frozen graph node to a validated artifact factory.
    * @param node Frozen BlackBox graph node.
    * @return Matching immutable factory, or null when unavailable.
@@ -298,6 +302,8 @@ private:
   std::array<float, 2> graphDcInput{};
   /** @brief Per-channel graph DC-blocker output memory. */
   std::array<float, 2> graphDcOutput{};
+  /** @brief Linear Dry/Wet ramp shared by modular and fallback mix paths. */
+  juce::LinearSmoothedValue<float> dryWetSmoother{1.0f};
 
   std::atomic<double> currentSampleRate{44100.0};
   /** @brief Runtime high-pass feedback coefficient derived from sample rate. */

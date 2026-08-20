@@ -148,6 +148,30 @@ void AuralForgeAudioProcessorEditor::renderFrame() {
 
   ImGui::SameLine();
   ImGui::BeginChild("InfoArea", ImVec2(332.0f, 0.0f), true);
+  if (auto *dryWetParameter = audioProcessor.getParameterState().getParameter(
+          auralforge::params::dryWet)) {
+    auto mixPercent = dryWetParameter->getValue() * 100.0f;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Dry/Wet");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1.0f);
+    const auto changed =
+        ImGui::SliderFloat("##dryWet", &mixPercent, 0.0f, 100.0f, "%.0f%%");
+    if (ImGui::IsItemActive()) {
+      if (!dryWetGestureActive) {
+        dryWetParameter->beginChangeGesture();
+        dryWetGestureActive = true;
+      }
+      if (changed)
+        dryWetParameter->setValueNotifyingHost(
+            std::clamp(mixPercent / 100.0f, 0.0f, 1.0f));
+    }
+    if (dryWetGestureActive && ImGui::IsItemDeactivated()) {
+      dryWetParameter->endChangeGesture();
+      dryWetGestureActive = false;
+    }
+  }
+  ImGui::Separator();
   refreshAnalysisIfNeeded();
   auralforge::ui::AnalysisPanelState analysisState;
   analysisState.nodeId = analysisNodeId;

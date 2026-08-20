@@ -15,6 +15,9 @@
 #include <vector>
 
 namespace auralforge::dsp {
+/** @brief Linear ramp length for Gain, Knob, XY, and Dry/Wet. */
+inline constexpr double controlRampSecondsDefault = 0.15;
+
 /**
  * @struct LiveGraphCompileOptions
  * @brief Host and execution constraints used while compiling a graph snapshot.
@@ -39,7 +42,7 @@ struct LiveGraphCompileOptions {
    * (including multiply-as-gain) settle without zipper noise. Linear
    * (not multiplicative) smoothing is required because Knob/XY may be 0.
    */
-  double controlRampSeconds = 0.15;
+  double controlRampSeconds = controlRampSecondsDefault;
 };
 
 /**
