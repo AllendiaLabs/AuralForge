@@ -152,7 +152,7 @@ Validation run on 2026-08-19 using the Release CMake build:
 
 | Check | Result | Notes |
 |---|---|---|
-| C++ target build | PASS | `AuralForgeTests`, `AuralForgeProcessorTests`, and `AuralForgeLiveGraphTests` built successfully |
+| C++ target build | PASS | `OpenYourBoxTests`, `OpenYourBoxProcessorTests`, and `OpenYourBoxLiveGraphTests` built successfully |
 | CTest suite | PASS | 4/4 tests passed: TCN model, processor integration, live graph, and freeze worker |
 | Frozen causal continuity | PASS | Whole-buffer and split-buffer frozen execution produced identical output |
 | Signed-seed compatibility | PASS | C++ live weights and Python freeze-worker weights matched the same fixed fixture |

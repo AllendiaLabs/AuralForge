@@ -119,7 +119,7 @@
 
 **Decision**: Use ML Forge as a reference for architectural patterns (block definitions, graph data model, node rendering, section/category organization) but rewrite in C++ rather than attempting to port Python directly.
 
-**Rationale**: ML Forge is Python/DearPyGui. AuralForge is C++/JUCE/Dear ImGui. The languages and UI frameworks differ too much for direct porting, but the design patterns (SECTIONS dict for block definitions, GraphNode dataclass, validation system) translate cleanly to C++ equivalents.
+**Rationale**: ML Forge is Python/DearPyGui. OpenYourBox is C++/JUCE/Dear ImGui. The languages and UI frameworks differ too much for direct porting, but the design patterns (SECTIONS dict for block definitions, GraphNode dataclass, validation system) translate cleanly to C++ equivalents.
 
 **Alternatives considered**:
 - Automated Python-to-C++ transpilation: Impractical for UI code.

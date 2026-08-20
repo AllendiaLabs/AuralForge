@@ -8,7 +8,7 @@ Sync Impact Report
 - Deferred TODOs: None
 -->
 
-# AuralForge Constitution
+# OpenYourBox Constitution
 
 ## Core Principles
 
@@ -126,7 +126,7 @@ The UI is the primary gatekeeper against illegal operations and legal liability:
 
 ## Governance
 
-This constitution serves as the single source of truth for all technical decisions in AuralForge.
+This constitution serves as the single source of truth for all technical decisions in OpenYourBox.
 
 - This document supersedes all other practices and design documents when conflicts arise.
 - Amendments MUST be documented with version bump rationale, approved by project maintainers, and include a migration plan for affected code.

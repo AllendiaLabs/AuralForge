@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(AuralForge VERSION 1.0.0 LANGUAGES C CXX OBJC OBJCXX)
+project(OpenYourBox VERSION 1.0.0 LANGUAGES C CXX OBJC OBJCXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,9 +8,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(FetchContent)
 
-set(AURALFORGE_JUCE_PATH "" CACHE PATH "Path to a JUCE 9.x source tree")
-if(AURALFORGE_JUCE_PATH)
-    add_subdirectory("${AURALFORGE_JUCE_PATH}" "${CMAKE_BINARY_DIR}/JUCE")
+set(OPENYOURBOX_JUCE_PATH "" CACHE PATH "Path to a JUCE 9.x source tree")
+if(OPENYOURBOX_JUCE_PATH)
+    add_subdirectory("${OPENYOURBOX_JUCE_PATH}" "${CMAKE_BINARY_DIR}/JUCE")
 else()
     FetchContent_Declare(
         JUCE
@@ -57,58 +57,58 @@ FetchContent_MakeAvailable(imgui imgui_node_editor)
 
 # imgui 1.91+ already provides float * ImVec2 when IMGUI_DEFINE_MATH_OPERATORS is
 # set. imgui-node-editor 021aa0e still emits its own copy.
-set(_auralforge_extra_math_h "${imgui_node_editor_SOURCE_DIR}/imgui_extra_math.h")
-set(_auralforge_extra_math_inl "${imgui_node_editor_SOURCE_DIR}/imgui_extra_math.inl")
-file(READ "${_auralforge_extra_math_h}" _auralforge_extra_math_h_src)
-if(NOT _auralforge_extra_math_h_src MATCHES "AURALFORGE_SKIP_FLOAT_IMVEC2_PRODUCT")
+set(_openyourbox_extra_math_h "${imgui_node_editor_SOURCE_DIR}/imgui_extra_math.h")
+set(_openyourbox_extra_math_inl "${imgui_node_editor_SOURCE_DIR}/imgui_extra_math.inl")
+file(READ "${_openyourbox_extra_math_h}" _openyourbox_extra_math_h_src)
+if(NOT _openyourbox_extra_math_h_src MATCHES "OPENYOURBOX_SKIP_FLOAT_IMVEC2_PRODUCT")
     string(REPLACE
         "inline ImVec2 operator*(const float lhs, const ImVec2& rhs);"
-        "# if IMGUI_VERSION_NUM < 19100 /* AURALFORGE_SKIP_FLOAT_IMVEC2_PRODUCT */\ninline ImVec2 operator*(const float lhs, const ImVec2& rhs);\n# endif"
-        _auralforge_extra_math_h_src "${_auralforge_extra_math_h_src}")
-    file(WRITE "${_auralforge_extra_math_h}" "${_auralforge_extra_math_h_src}")
-    file(READ "${_auralforge_extra_math_inl}" _auralforge_extra_math_inl_src)
+        "# if IMGUI_VERSION_NUM < 19100 /* OPENYOURBOX_SKIP_FLOAT_IMVEC2_PRODUCT */\ninline ImVec2 operator*(const float lhs, const ImVec2& rhs);\n# endif"
+        _openyourbox_extra_math_h_src "${_openyourbox_extra_math_h_src}")
+    file(WRITE "${_openyourbox_extra_math_h}" "${_openyourbox_extra_math_h_src}")
+    file(READ "${_openyourbox_extra_math_inl}" _openyourbox_extra_math_inl_src)
     string(REPLACE
         "inline ImVec2 operator*(const float lhs, const ImVec2& rhs)\n{\n    return ImVec2(lhs * rhs.x, lhs * rhs.y);\n}"
-        "# if IMGUI_VERSION_NUM < 19100 /* AURALFORGE_SKIP_FLOAT_IMVEC2_PRODUCT */\ninline ImVec2 operator*(const float lhs, const ImVec2& rhs)\n{\n    return ImVec2(lhs * rhs.x, lhs * rhs.y);\n}\n# endif"
-        _auralforge_extra_math_inl_src "${_auralforge_extra_math_inl_src}")
-    file(WRITE "${_auralforge_extra_math_inl}" "${_auralforge_extra_math_inl_src}")
+        "# if IMGUI_VERSION_NUM < 19100 /* OPENYOURBOX_SKIP_FLOAT_IMVEC2_PRODUCT */\ninline ImVec2 operator*(const float lhs, const ImVec2& rhs)\n{\n    return ImVec2(lhs * rhs.x, lhs * rhs.y);\n}\n# endif"
+        _openyourbox_extra_math_inl_src "${_openyourbox_extra_math_inl_src}")
+    file(WRITE "${_openyourbox_extra_math_inl}" "${_openyourbox_extra_math_inl_src}")
 endif()
 
 # Public NavigateTo(..., zoomIn=false) only recentres. Exact mode keeps zoom.
-set(_auralforge_ne_internal "${imgui_node_editor_SOURCE_DIR}/imgui_node_editor_internal.h")
-file(READ "${_auralforge_ne_internal}" _auralforge_ne_internal_src)
-if(NOT _auralforge_ne_internal_src MATCHES "AURALFORGE_NAVIGATE_EXACT")
+set(_openyourbox_ne_internal "${imgui_node_editor_SOURCE_DIR}/imgui_node_editor_internal.h")
+file(READ "${_openyourbox_ne_internal}" _openyourbox_ne_internal_src)
+if(NOT _openyourbox_ne_internal_src MATCHES "OPENYOURBOX_NAVIGATE_EXACT")
     string(REPLACE
         "auto zoomMode = zoomIn ? NavigateAction::ZoomMode::WithMargin : NavigateAction::ZoomMode::None;"
-        "auto zoomMode = zoomIn ? NavigateAction::ZoomMode::WithMargin : NavigateAction::ZoomMode::Exact; /* AURALFORGE_NAVIGATE_EXACT */"
-        _auralforge_ne_internal_src "${_auralforge_ne_internal_src}")
-    file(WRITE "${_auralforge_ne_internal}" "${_auralforge_ne_internal_src}")
+        "auto zoomMode = zoomIn ? NavigateAction::ZoomMode::WithMargin : NavigateAction::ZoomMode::Exact; /* OPENYOURBOX_NAVIGATE_EXACT */"
+        _openyourbox_ne_internal_src "${_openyourbox_ne_internal_src}")
+    file(WRITE "${_openyourbox_ne_internal}" "${_openyourbox_ne_internal_src}")
 endif()
 
-add_library(auralforge_imgui STATIC
+add_library(openyourbox_imgui STATIC
     "${imgui_SOURCE_DIR}/imgui.cpp"
     "${imgui_SOURCE_DIR}/imgui_draw.cpp"
     "${imgui_SOURCE_DIR}/imgui_tables.cpp"
     "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
-    AuralForge/Source/ui/ImGuiOpenGLBackend.cpp
+    OpenYourBox/Source/ui/ImGuiOpenGLBackend.cpp
     "${imgui_node_editor_SOURCE_DIR}/crude_json.cpp"
     "${imgui_node_editor_SOURCE_DIR}/imgui_canvas.cpp"
     "${imgui_node_editor_SOURCE_DIR}/imgui_node_editor.cpp"
     "${imgui_node_editor_SOURCE_DIR}/imgui_node_editor_api.cpp")
-target_include_directories(auralforge_imgui PUBLIC
+target_include_directories(openyourbox_imgui PUBLIC
     "${imgui_SOURCE_DIR}"
     "${imgui_SOURCE_DIR}/backends"
     "${imgui_node_editor_SOURCE_DIR}")
-target_compile_definitions(auralforge_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
-target_link_libraries(auralforge_imgui PUBLIC juce::juce_opengl)
+target_compile_definitions(openyourbox_imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
+target_link_libraries(openyourbox_imgui PUBLIC juce::juce_opengl)
 
-juce_add_plugin(AuralForge
+juce_add_plugin(OpenYourBox
     COMPANY_NAME "Allendia"
-    BUNDLE_ID "com.allendia.auralforge"
+    BUNDLE_ID "com.allendia.openyourbox"
     PLUGIN_MANUFACTURER_CODE Alnd
-    PLUGIN_CODE AuFg
+    PLUGIN_CODE OyBx
     FORMATS AU VST3
-    PRODUCT_NAME "AuralForge"
+    PRODUCT_NAME "OpenYourBox"
     DESCRIPTION "Live modular temporal convolution audio effect"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT TRUE
@@ -118,45 +118,45 @@ juce_add_plugin(AuralForge
     COPY_PLUGIN_AFTER_BUILD FALSE
     VST3_CATEGORIES Fx Distortion)
 
-juce_generate_juce_header(AuralForge)
+juce_generate_juce_header(OpenYourBox)
 
-juce_add_binary_data(AuralForgeResources
+juce_add_binary_data(OpenYourBoxResources
     SOURCES Backend/freeze_worker.py)
 
-target_sources(AuralForge PRIVATE
-    AuralForge/Source/PluginEditor.cpp
-    AuralForge/Source/PluginProcessor.cpp
-    AuralForge/Source/dsp/LiveGraphEngine.cpp
-    AuralForge/Source/dsp/LiveGraphPublisher.cpp
-    AuralForge/Source/dsp/LookbackBuffer.cpp
-    AuralForge/Source/dsp/TCNModel.cpp
-    AuralForge/Source/dsp/TorchScriptBlackBox.cpp
-    AuralForge/Source/dsp/WeightRandomizer.cpp
-    AuralForge/Source/freeze/FreezeCoordinator.cpp
-    AuralForge/Source/graph/NodeGraph.cpp
-    AuralForge/Source/graph/NodeRenderer.cpp
-    AuralForge/Source/params/ParamLayout.cpp
-    AuralForge/Source/ui/ImGuiHost.cpp
-    AuralForge/Source/ui/InfoPanel.cpp
-    AuralForge/Source/ui/RandomizeButton.cpp)
+target_sources(OpenYourBox PRIVATE
+    OpenYourBox/Source/PluginEditor.cpp
+    OpenYourBox/Source/PluginProcessor.cpp
+    OpenYourBox/Source/dsp/LiveGraphEngine.cpp
+    OpenYourBox/Source/dsp/LiveGraphPublisher.cpp
+    OpenYourBox/Source/dsp/LookbackBuffer.cpp
+    OpenYourBox/Source/dsp/TCNModel.cpp
+    OpenYourBox/Source/dsp/TorchScriptBlackBox.cpp
+    OpenYourBox/Source/dsp/WeightRandomizer.cpp
+    OpenYourBox/Source/freeze/FreezeCoordinator.cpp
+    OpenYourBox/Source/graph/NodeGraph.cpp
+    OpenYourBox/Source/graph/NodeRenderer.cpp
+    OpenYourBox/Source/params/ParamLayout.cpp
+    OpenYourBox/Source/ui/ImGuiHost.cpp
+    OpenYourBox/Source/ui/InfoPanel.cpp
+    OpenYourBox/Source/ui/RandomizeButton.cpp)
 
-target_include_directories(AuralForge PRIVATE
-    AuralForge/Source
+target_include_directories(OpenYourBox PRIVATE
+    OpenYourBox/Source
     "${TORCH_INCLUDE_DIRS}")
 
-target_compile_definitions(AuralForge PUBLIC
-    AURALFORGE_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
+target_compile_definitions(OpenYourBox PUBLIC
+    OPENYOURBOX_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_DISPLAY_SPLASH_SCREEN=0)
 
-target_compile_options(AuralForge PRIVATE
+target_compile_options(OpenYourBox PRIVATE
     $<$<CXX_COMPILER_ID:AppleClang,Clang>:-Wall -Wextra -Wpedantic>)
 
-target_link_libraries(AuralForge PRIVATE
-    AuralForgeResources
-    auralforge_imgui
+target_link_libraries(OpenYourBox PRIVATE
+    OpenYourBoxResources
+    openyourbox_imgui
     "${TORCH_LIBRARIES}"
     juce::juce_audio_utils
     juce::juce_dsp
@@ -167,73 +167,73 @@ target_link_libraries(AuralForge PRIVATE
     juce::juce_recommended_warning_flags)
 
 if(APPLE)
-    set(AURALFORGE_USER_VST3_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/VST3")
-    set_target_properties(AuralForge PROPERTIES
+    set(OPENYOURBOX_USER_VST3_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/VST3")
+    set_target_properties(OpenYourBox PROPERTIES
         XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO")
-    add_custom_command(TARGET AuralForge_VST3 POST_BUILD
+    add_custom_command(TARGET OpenYourBox_VST3 POST_BUILD
         COMMAND codesign --force --deep --sign -
-            "$<TARGET_BUNDLE_DIR:AuralForge_VST3>"
+            "$<TARGET_BUNDLE_DIR:OpenYourBox_VST3>"
         COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "${AURALFORGE_USER_VST3_DIR}"
+            "${OPENYOURBOX_USER_VST3_DIR}"
         COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "$<TARGET_BUNDLE_DIR:AuralForge_VST3>"
-            "${AURALFORGE_USER_VST3_DIR}/AuralForge.vst3"
+            "$<TARGET_BUNDLE_DIR:OpenYourBox_VST3>"
+            "${OPENYOURBOX_USER_VST3_DIR}/OpenYourBox.vst3"
         VERBATIM)
-    add_custom_command(TARGET AuralForge_AU POST_BUILD
+    add_custom_command(TARGET OpenYourBox_AU POST_BUILD
         COMMAND codesign --force --deep --sign -
-            "$<TARGET_BUNDLE_DIR:AuralForge_AU>"
+            "$<TARGET_BUNDLE_DIR:OpenYourBox_AU>"
         VERBATIM)
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
-    juce_add_console_app(AuralForgeTests PRODUCT_NAME "AuralForge Tests")
-    target_sources(AuralForgeTests PRIVATE
+    juce_add_console_app(OpenYourBoxTests PRODUCT_NAME "OpenYourBox Tests")
+    target_sources(OpenYourBoxTests PRIVATE
         Tests/TCNModelTests.cpp
-        AuralForge/Source/dsp/TCNModel.cpp)
-    target_include_directories(AuralForgeTests PRIVATE
-        AuralForge/Source
+        OpenYourBox/Source/dsp/TCNModel.cpp)
+    target_include_directories(OpenYourBoxTests PRIVATE
+        OpenYourBox/Source
         "${TORCH_INCLUDE_DIRS}")
-    target_link_libraries(AuralForgeTests PRIVATE
+    target_link_libraries(OpenYourBoxTests PRIVATE
         "${TORCH_LIBRARIES}"
         juce::juce_core
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
-    add_test(NAME AuralForgeTCNModel COMMAND AuralForgeTests)
+    add_test(NAME OpenYourBoxTCNModel COMMAND OpenYourBoxTests)
 
-    juce_add_console_app(AuralForgeProcessorTests PRODUCT_NAME "AuralForge Processor Tests")
-    target_sources(AuralForgeProcessorTests PRIVATE Tests/ProcessorIntegrationTests.cpp)
-    target_include_directories(AuralForgeProcessorTests BEFORE PRIVATE
-        "${CMAKE_CURRENT_BINARY_DIR}/AuralForge_artefacts/JuceLibraryCode"
-        AuralForge/Source
+    juce_add_console_app(OpenYourBoxProcessorTests PRODUCT_NAME "OpenYourBox Processor Tests")
+    target_sources(OpenYourBoxProcessorTests PRIVATE Tests/ProcessorIntegrationTests.cpp)
+    target_include_directories(OpenYourBoxProcessorTests BEFORE PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/OpenYourBox_artefacts/JuceLibraryCode"
+        OpenYourBox/Source
         "${TORCH_INCLUDE_DIRS}")
-    target_link_libraries(AuralForgeProcessorTests PRIVATE
-        AuralForge
-        AuralForgeResources
+    target_link_libraries(OpenYourBoxProcessorTests PRIVATE
+        OpenYourBox
+        OpenYourBoxResources
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_opengl
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
-    add_test(NAME AuralForgeProcessor COMMAND AuralForgeProcessorTests)
+    add_test(NAME OpenYourBoxProcessor COMMAND OpenYourBoxProcessorTests)
 
-    juce_add_console_app(AuralForgeLiveGraphTests PRODUCT_NAME "AuralForge Live Graph Tests")
-    target_sources(AuralForgeLiveGraphTests PRIVATE Tests/LiveGraphEngineTests.cpp)
-    target_include_directories(AuralForgeLiveGraphTests BEFORE PRIVATE
-        "${CMAKE_CURRENT_BINARY_DIR}/AuralForge_artefacts/JuceLibraryCode"
-        AuralForge/Source
+    juce_add_console_app(OpenYourBoxLiveGraphTests PRODUCT_NAME "OpenYourBox Live Graph Tests")
+    target_sources(OpenYourBoxLiveGraphTests PRIVATE Tests/LiveGraphEngineTests.cpp)
+    target_include_directories(OpenYourBoxLiveGraphTests BEFORE PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/OpenYourBox_artefacts/JuceLibraryCode"
+        OpenYourBox/Source
         "${TORCH_INCLUDE_DIRS}")
-    target_link_libraries(AuralForgeLiveGraphTests PRIVATE
-        AuralForge
-        AuralForgeResources
+    target_link_libraries(OpenYourBoxLiveGraphTests PRIVATE
+        OpenYourBox
+        OpenYourBoxResources
         juce::juce_audio_utils
         juce::juce_dsp
         juce::juce_opengl
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)
-    add_test(NAME AuralForgeLiveGraph COMMAND AuralForgeLiveGraphTests)
+    add_test(NAME OpenYourBoxLiveGraph COMMAND OpenYourBoxLiveGraphTests)
 
-    add_test(NAME AuralForgeFreezeWorker
+    add_test(NAME OpenYourBoxFreezeWorker
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/Tests/test_freeze_worker.py")
 endif()

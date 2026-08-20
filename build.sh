@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — Configure and build AuralForge.
+# build.sh — Configure and build OpenYourBox.
 #
 # Usage:
 #   ./build.sh            Build in Release mode
@@ -20,7 +20,7 @@ while getopts "da" opt; do
     esac
 done
 
-BUILD_DIR="AuralForge/Builds/${BUILD_TYPE}"
+BUILD_DIR="OpenYourBox/Builds/${BUILD_TYPE}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LIBTORCH_DIR="${SCRIPT_DIR}/libtorch"
 TORCH_PREFIX=""
@@ -44,7 +44,7 @@ fi
 
 cmake -S . -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DAURALFORGE_JUCE_PATH="/Users/hugo/JUCE" \
+    -DOPENYOURBOX_JUCE_PATH="/Users/hugo/JUCE" \
     -DCMAKE_PREFIX_PATH="${TORCH_PREFIX}"
 cmake --build "$BUILD_DIR" --parallel "$(sysctl -n hw.logicalcpu 2>/dev/null || nproc)"
 

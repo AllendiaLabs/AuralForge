@@ -23,7 +23,7 @@ bool expect(bool condition, const char *message) {
  * @return Zero when every invariant passes.
  */
 int main() {
-  using namespace auralforge::dsp;
+  using namespace openyourbox::dsp;
   TCNConfiguration configuration;
   configuration.depth = 4;
   configuration.kernelSize = 3;
@@ -68,6 +68,6 @@ int main() {
                    "bias-free model must preserve digital silence");
 
   if (passed)
-    std::cout << "AuralForge TCN model tests passed\n";
+    std::cout << "OpenYourBox TCN model tests passed\n";
   return passed ? 0 : 1;
 }

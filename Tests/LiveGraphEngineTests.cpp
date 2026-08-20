@@ -22,7 +22,7 @@ bool expect(bool condition, const char *message) {
  * @class TestFrozenKernel
  * @brief Stateless two-tap causal kernel used to verify runtime history.
  */
-class TestFrozenKernel final : public auralforge::dsp::FrozenBlackBoxKernel {
+class TestFrozenKernel final : public openyourbox::dsp::FrozenBlackBoxKernel {
 public:
   /** @brief Applies a causal current-plus-previous-sample operation. */
   torch::Tensor forward(const torch::Tensor &input) override {
@@ -38,7 +38,7 @@ public:
  * @class TestFrozenFactory
  * @brief Supplies deterministic metadata and kernels for frozen graph tests.
  */
-class TestFrozenFactory final : public auralforge::dsp::FrozenBlackBoxFactory {
+class TestFrozenFactory final : public openyourbox::dsp::FrozenBlackBoxFactory {
 public:
   /** @brief Returns the stereo test input width. */
   int getInputChannels() const noexcept override { return 2; }
@@ -51,7 +51,7 @@ public:
   /** @brief Reports exact digital-silence preservation. */
   bool preservesSilence() const noexcept override { return true; }
   /** @brief Creates one runtime-local deterministic test kernel. */
-  std::unique_ptr<auralforge::dsp::FrozenBlackBoxKernel>
+  std::unique_ptr<openyourbox::dsp::FrozenBlackBoxKernel>
   createKernel() const override {
     return std::make_unique<TestFrozenKernel>();
   }
@@ -63,9 +63,9 @@ public:
  * @param secondConvolution Receives the second weighted node identifier.
  * @return Editable graph document.
  */
-auralforge::graph::NodeGraph makeGraph(std::int32_t &firstConvolution,
+openyourbox::graph::NodeGraph makeGraph(std::int32_t &firstConvolution,
                                        std::int32_t &secondConvolution) {
-  using namespace auralforge::graph;
+  using namespace openyourbox::graph;
   NodeGraph graph;
   const auto input = graph.addNode(NodeType::audioInput, {0.0f, 0.0f});
   firstConvolution = graph.addNode(NodeType::convolution, {180.0f, 0.0f});
@@ -96,7 +96,7 @@ auralforge::graph::NodeGraph makeGraph(std::int32_t &firstConvolution,
  * @return Zero when every invariant passes.
  */
 int main() {
-  using namespace auralforge::dsp;
+  using namespace openyourbox::dsp;
   std::int32_t firstConvolution = 0;
   std::int32_t secondConvolution = 0;
   const auto graph = makeGraph(firstConvolution, secondConvolution);
@@ -126,13 +126,13 @@ int main() {
   passed &= expect(silentOutput.abs().max().item<float>() == 0.0f,
                    "bias-free live graph must preserve digital silence");
 
-  auralforge::graph::NodeGraph linearGraph;
+  openyourbox::graph::NodeGraph linearGraph;
   const auto linearInput = linearGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto linearNode =
-      linearGraph.addNode(auralforge::graph::NodeType::linear, {180.0f, 0.0f});
+      linearGraph.addNode(openyourbox::graph::NodeType::linear, {180.0f, 0.0f});
   const auto linearOutput = linearGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+      openyourbox::graph::NodeType::audioOutput, {360.0f, 0.0f});
   linearGraph.setSeed(linearNode, 42);
   linearGraph.connect(linearGraph.findNode(linearInput)->outputs.front().id,
                       linearGraph.findNode(linearNode)->inputs.front().id);
@@ -177,13 +177,13 @@ int main() {
   passed &= expect(!torch::equal(originalOutput, changedOutput),
                    "a different signed seed must change the target element");
 
-  auralforge::graph::NodeGraph frozenGraph;
+  openyourbox::graph::NodeGraph frozenGraph;
   const auto frozenInput = frozenGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto frozenNode = frozenGraph.addNode(
-      auralforge::graph::NodeType::blackBox, {180.0f, 0.0f});
+      openyourbox::graph::NodeType::blackBox, {180.0f, 0.0f});
   const auto frozenOutput = frozenGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+      openyourbox::graph::NodeType::audioOutput, {360.0f, 0.0f});
   frozenGraph.findNode(frozenNode)->artifactPath = "test-frozen-artifact";
   frozenGraph.connect(frozenGraph.findNode(frozenInput)->outputs.front().id,
                       frozenGraph.findNode(frozenNode)->inputs.front().id);
@@ -192,7 +192,7 @@ int main() {
   const auto factory = std::make_shared<TestFrozenFactory>();
   const auto frozenCompiled = LiveGraphEngine::compile(
       frozenGraph, options,
-      [factory](const auralforge::graph::GraphNode &) { return factory; });
+      [factory](const openyourbox::graph::GraphNode &) { return factory; });
   passed &= expect(frozenCompiled.succeeded(),
                    "valid frozen graph must compile with prepared metadata");
   const auto wholeRuntime =
@@ -223,17 +223,17 @@ int main() {
                        error.code == LiveGraphErrorCode::invalidRandomization,
                    "unknown element randomization must fail without mutation");
 
-  auralforge::graph::NodeGraph mixerGraph;
+  openyourbox::graph::NodeGraph mixerGraph;
   const auto mixerInput = mixerGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto leftActivation = mixerGraph.addNode(
-      auralforge::graph::NodeType::activation, {180.0f, -40.0f});
+      openyourbox::graph::NodeType::activation, {180.0f, -40.0f});
   const auto rightActivation = mixerGraph.addNode(
-      auralforge::graph::NodeType::activation, {180.0f, 80.0f});
+      openyourbox::graph::NodeType::activation, {180.0f, 80.0f});
   const auto mergeNode =
-      mixerGraph.addNode(auralforge::graph::NodeType::merge, {360.0f, 20.0f});
+      mixerGraph.addNode(openyourbox::graph::NodeType::merge, {360.0f, 20.0f});
   const auto mixerOutput = mixerGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+      openyourbox::graph::NodeType::audioOutput, {540.0f, 20.0f});
   mixerGraph.connect(mixerGraph.findNode(mixerInput)->outputs.front().id,
                      mixerGraph.findNode(leftActivation)->inputs.front().id);
   mixerGraph.connect(mixerGraph.findNode(mixerInput)->outputs.front().id,
@@ -258,17 +258,17 @@ int main() {
                      "ReLU merge add of two unit paths must double the input");
   }
 
-  auralforge::graph::NodeGraph multiplyMergeGraph;
+  openyourbox::graph::NodeGraph multiplyMergeGraph;
   const auto multiplyMergeInput = multiplyMergeGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto leftPath = multiplyMergeGraph.addNode(
-      auralforge::graph::NodeType::activation, {180.0f, -40.0f});
+      openyourbox::graph::NodeType::activation, {180.0f, -40.0f});
   const auto rightPath = multiplyMergeGraph.addNode(
-      auralforge::graph::NodeType::activation, {180.0f, 80.0f});
+      openyourbox::graph::NodeType::activation, {180.0f, 80.0f});
   const auto multiplyMergeNode = multiplyMergeGraph.addNode(
-      auralforge::graph::NodeType::merge, {360.0f, 20.0f});
+      openyourbox::graph::NodeType::merge, {360.0f, 20.0f});
   const auto multiplyMergeOutput = multiplyMergeGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+      openyourbox::graph::NodeType::audioOutput, {540.0f, 20.0f});
   multiplyMergeGraph.setProperty(multiplyMergeNode, "mode", 1);
   multiplyMergeGraph.connect(
       multiplyMergeGraph.findNode(multiplyMergeInput)->outputs.front().id,
@@ -300,13 +300,13 @@ int main() {
                      "ReLU merge multiply of two unit paths must stay unity");
   }
 
-  auralforge::graph::NodeGraph concatGraph;
+  openyourbox::graph::NodeGraph concatGraph;
   const auto concatInput = concatGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto concatNode = concatGraph.addNode(
-      auralforge::graph::NodeType::merge, {180.0f, 0.0f});
+      openyourbox::graph::NodeType::merge, {180.0f, 0.0f});
   const auto concatOutput = concatGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+      openyourbox::graph::NodeType::audioOutput, {360.0f, 0.0f});
   concatGraph.setProperty(concatNode, "mode", 2);
   concatGraph.setProperty(concatNode, "inputs", 2);
   concatGraph.connect(concatGraph.findNode(concatInput)->outputs.front().id,
@@ -329,13 +329,13 @@ int main() {
                      "merge concatenate must omit unused inputs without extra channels");
   }
 
-  auralforge::graph::NodeGraph addMergeGraph;
+  openyourbox::graph::NodeGraph addMergeGraph;
   const auto unusedAddInput = addMergeGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto unusedAddNode =
-      addMergeGraph.addNode(auralforge::graph::NodeType::merge, {180.0f, 0.0f});
+      addMergeGraph.addNode(openyourbox::graph::NodeType::merge, {180.0f, 0.0f});
   const auto unusedAddOutput = addMergeGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+      openyourbox::graph::NodeType::audioOutput, {360.0f, 0.0f});
   addMergeGraph.connect(addMergeGraph.findNode(unusedAddInput)->outputs.front().id,
                         addMergeGraph.findNode(unusedAddNode)->inputs[0].id);
   addMergeGraph.connect(addMergeGraph.findNode(unusedAddNode)->outputs.front().id,
@@ -351,13 +351,13 @@ int main() {
                      "an unused merge add input must contribute zeros");
   }
 
-  auralforge::graph::NodeGraph multiplyGraph;
+  openyourbox::graph::NodeGraph multiplyGraph;
   const auto multiplyInput = multiplyGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto multiplyNode = multiplyGraph.addNode(
-      auralforge::graph::NodeType::merge, {180.0f, 0.0f});
+      openyourbox::graph::NodeType::merge, {180.0f, 0.0f});
   const auto multiplyOutput = multiplyGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+      openyourbox::graph::NodeType::audioOutput, {360.0f, 0.0f});
   multiplyGraph.setProperty(multiplyNode, "mode", 1);
   multiplyGraph.connect(multiplyGraph.findNode(multiplyInput)->outputs.front().id,
                         multiplyGraph.findNode(multiplyNode)->inputs[0].id);
@@ -375,13 +375,13 @@ int main() {
                      "an unused merge multiply input must contribute ones");
   }
 
-  auralforge::graph::NodeGraph orphanGraph;
+  openyourbox::graph::NodeGraph orphanGraph;
   const auto orphanInput = orphanGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto orphanOutput = orphanGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {180.0f, 0.0f});
-  orphanGraph.addNode(auralforge::graph::NodeType::convolution, {90.0f, 80.0f});
-  orphanGraph.addNode(auralforge::graph::NodeType::tcn, {90.0f, -80.0f});
+      openyourbox::graph::NodeType::audioOutput, {180.0f, 0.0f});
+  orphanGraph.addNode(openyourbox::graph::NodeType::convolution, {90.0f, 80.0f});
+  orphanGraph.addNode(openyourbox::graph::NodeType::tcn, {90.0f, -80.0f});
   orphanGraph.connect(orphanGraph.findNode(orphanInput)->outputs.front().id,
                       orphanGraph.findNode(orphanOutput)->inputs.front().id);
   const auto orphanCompiled = LiveGraphEngine::compile(orphanGraph, options);
@@ -400,21 +400,21 @@ int main() {
                      "unwired Conv1D and TCN must leave the I/O path unchanged");
   }
 
-  auralforge::graph::NodeGraph openGraph;
-  openGraph.addNode(auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
-  openGraph.addNode(auralforge::graph::NodeType::audioOutput, {180.0f, 0.0f});
+  openyourbox::graph::NodeGraph openGraph;
+  openGraph.addNode(openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
+  openGraph.addNode(openyourbox::graph::NodeType::audioOutput, {180.0f, 0.0f});
   const auto openCompiled = LiveGraphEngine::compile(openGraph, options);
   passed &= expect(!openCompiled.succeeded() &&
                        openCompiled.error.code == LiveGraphErrorCode::incompletePath,
                    "disconnected stereo I/O must stay idle without a live runtime");
 
-  auralforge::graph::NodeGraph activationGraph;
+  openyourbox::graph::NodeGraph activationGraph;
   const auto activationInput = activationGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto activationNode = activationGraph.addNode(
-      auralforge::graph::NodeType::activation, {180.0f, 0.0f});
+      openyourbox::graph::NodeType::activation, {180.0f, 0.0f});
   const auto activationOutput = activationGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+      openyourbox::graph::NodeType::audioOutput, {360.0f, 0.0f});
   activationGraph.connect(
       activationGraph.findNode(activationInput)->outputs.front().id,
       activationGraph.findNode(activationNode)->inputs.front().id);
@@ -428,9 +428,9 @@ int main() {
   passed &= expect(activationCompiled.succeeded(),
                    "Activation graph with Gain must compile");
 
-  auralforge::dsp::AnalysisRequest analysisRequest;
+  openyourbox::dsp::AnalysisRequest analysisRequest;
   analysisRequest.nodeId = activationNode;
-  analysisRequest.view = auralforge::graph::AnalysisView::transfer;
+  analysisRequest.view = openyourbox::graph::AnalysisView::transfer;
   analysisRequest.revision = 1;
   const auto transfer = LiveGraphEngine::analyse(activationGraph,
                                                  analysisRequest, options);
@@ -440,36 +440,36 @@ int main() {
                        transfer.elementOnlySeries.size() ==
                            static_cast<std::size_t>(transfer.channelCount),
                    "analysis must return dual N-channel curve families");
-  analysisRequest.view = auralforge::graph::AnalysisView::frequency;
+  analysisRequest.view = openyourbox::graph::AnalysisView::frequency;
   const auto frequency = LiveGraphEngine::analyse(activationGraph,
                                                   analysisRequest, options);
   passed &= expect(frequency.sourceMode == AnalysisSourceMode::probe &&
                        !frequency.chainSeries.empty() &&
                        !frequency.chainSeries.front().x.empty(),
                    "frequency analysis must fall back to a probe when silent");
-  analysisRequest.view = auralforge::graph::AnalysisView::oscilloscope;
+  analysisRequest.view = openyourbox::graph::AnalysisView::oscilloscope;
   analysisRequest.sampleRate = 44100.0;
   const auto oscilloscope = LiveGraphEngine::analyse(activationGraph,
                                                      analysisRequest, options);
   passed &= expect(oscilloscope.view ==
-                           auralforge::graph::AnalysisView::oscilloscope &&
+                           openyourbox::graph::AnalysisView::oscilloscope &&
                        oscilloscope.sourceMode == AnalysisSourceMode::probe &&
                        oscilloscope.elementOnlySeries.size() >= 2 &&
                        oscilloscope.elementOnlySeries.front().x.size() >= 2 &&
                        oscilloscope.elementOnlySeries.front().y.size() >= 2,
                    "oscilloscope analysis must return element waveforms");
 
-  auralforge::graph::NodeGraph knobGraph;
+  openyourbox::graph::NodeGraph knobGraph;
   const auto knobInput = knobGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
-  const auto knob = knobGraph.addNode(auralforge::graph::NodeType::knobInput,
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
+  const auto knob = knobGraph.addNode(openyourbox::graph::NodeType::knobInput,
                                       {0.0f, 80.0f});
   const auto knobMerge =
-      knobGraph.addNode(auralforge::graph::NodeType::merge, {180.0f, 20.0f});
+      knobGraph.addNode(openyourbox::graph::NodeType::merge, {180.0f, 20.0f});
   const auto knobTcn =
-      knobGraph.addNode(auralforge::graph::NodeType::tcn, {360.0f, 20.0f});
+      knobGraph.addNode(openyourbox::graph::NodeType::tcn, {360.0f, 20.0f});
   const auto knobOutput = knobGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+      openyourbox::graph::NodeType::audioOutput, {540.0f, 20.0f});
   knobGraph.setProperty(knobTcn, "channels", 2);
   knobGraph.setConditioningValue(knob, 1.5f);
   passed &= expect(
@@ -533,7 +533,7 @@ int main() {
   for (std::size_t index = 0; index < fakeLive.size(); ++index)
     fakeLive[index] = std::sin(static_cast<float>(index) * 0.11f);
   analysisRequest.liveInput = fakeLive.data();
-  analysisRequest.view = auralforge::graph::AnalysisView::oscilloscope;
+  analysisRequest.view = openyourbox::graph::AnalysisView::oscilloscope;
   const auto knobOscilloscope = LiveGraphEngine::analyse(knobGraph, analysisRequest,
                                                          options);
   passed &= expect(
@@ -545,7 +545,7 @@ int main() {
       "conditioning-source oscilloscope must ignore live audio capture");
 
   const auto restoredTree = knobGraph.toValueTree();
-  auralforge::graph::NodeGraph restoredKnob;
+  openyourbox::graph::NodeGraph restoredKnob;
   passed &= expect(restoredKnob.restoreFromValueTree(restoredTree),
                    "Knob graph must serialize");
   const auto *restoredKnobNode = restoredKnob.findNode(knob);
@@ -554,17 +554,17 @@ int main() {
                            1.0e-4f,
                    "Knob conditioning value must survive ValueTree recall");
 
-  auralforge::graph::NodeGraph xyVolumeGraph;
+  openyourbox::graph::NodeGraph xyVolumeGraph;
   const auto xyVolumeInput = xyVolumeGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto xyPad = xyVolumeGraph.addNode(
-      auralforge::graph::NodeType::xyTrackpad, {0.0f, 80.0f});
+      openyourbox::graph::NodeType::xyTrackpad, {0.0f, 80.0f});
   const auto xyConcat =
-      xyVolumeGraph.addNode(auralforge::graph::NodeType::merge, {180.0f, 80.0f});
+      xyVolumeGraph.addNode(openyourbox::graph::NodeType::merge, {180.0f, 80.0f});
   const auto xyMultiply =
-      xyVolumeGraph.addNode(auralforge::graph::NodeType::merge, {360.0f, 20.0f});
+      xyVolumeGraph.addNode(openyourbox::graph::NodeType::merge, {360.0f, 20.0f});
   const auto xyVolumeOutput = xyVolumeGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+      openyourbox::graph::NodeType::audioOutput, {540.0f, 20.0f});
   xyVolumeGraph.setProperty(xyConcat, "mode", 2);
   xyVolumeGraph.setProperty(xyMultiply, "mode", 1);
   xyVolumeGraph.setConditioningPad(xyPad, 0.5f, 2.0f);
@@ -617,19 +617,19 @@ int main() {
                      "concatenated XY must scale stereo audio per channel");
   }
 
-  auralforge::graph::NodeGraph rampGraph;
+  openyourbox::graph::NodeGraph rampGraph;
   const auto rampInput =
-      rampGraph.addNode(auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      rampGraph.addNode(openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto rampKnob =
-      rampGraph.addNode(auralforge::graph::NodeType::knobInput, {0.0f, 80.0f});
+      rampGraph.addNode(openyourbox::graph::NodeType::knobInput, {0.0f, 80.0f});
   const auto rampActivation = rampGraph.addNode(
-      auralforge::graph::NodeType::activation, {180.0f, -40.0f});
+      openyourbox::graph::NodeType::activation, {180.0f, -40.0f});
   const auto rampXy =
-      rampGraph.addNode(auralforge::graph::NodeType::xyTrackpad, {0.0f, 160.0f});
+      rampGraph.addNode(openyourbox::graph::NodeType::xyTrackpad, {0.0f, 160.0f});
   const auto rampMerge =
-      rampGraph.addNode(auralforge::graph::NodeType::merge, {360.0f, 20.0f});
+      rampGraph.addNode(openyourbox::graph::NodeType::merge, {360.0f, 20.0f});
   const auto rampOutput =
-      rampGraph.addNode(auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+      rampGraph.addNode(openyourbox::graph::NodeType::audioOutput, {540.0f, 20.0f});
   rampGraph.setProperty(rampMerge, "mode", 1);
   rampGraph.setProperty(rampMerge, "inputs", 3);
   passed &= expect(
@@ -681,6 +681,6 @@ int main() {
   }
 
   if (passed)
-    std::cout << "AuralForge live graph engine tests passed\n";
+    std::cout << "OpenYourBox live graph engine tests passed\n";
   return passed ? 0 : 1;
 }

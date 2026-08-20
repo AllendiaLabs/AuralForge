@@ -39,7 +39,7 @@ bool expect(bool condition, const char *message) {
  * @param expectedReceptiveField Receptive field identifying the test graph.
  * @return True when the graph runtime becomes observable before timeout.
  */
-bool waitForGraphRuntime(AuralForgeAudioProcessor &processor,
+bool waitForGraphRuntime(OpenYourBoxAudioProcessor &processor,
                          std::uint64_t expectedReceptiveField) {
   constexpr int attempts = 200;
   for (int attempt = 0; attempt < attempts; ++attempt) {
@@ -62,13 +62,13 @@ int main() {
   juce::MidiBuffer midi;
   bool passed = true;
 
-  auralforge::graph::NodeGraph graph;
+  openyourbox::graph::NodeGraph graph;
   const auto inputNode =
-      graph.addNode(auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      graph.addNode(openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto convolutionNode =
-      graph.addNode(auralforge::graph::NodeType::convolution, {200.0f, 0.0f});
+      graph.addNode(openyourbox::graph::NodeType::convolution, {200.0f, 0.0f});
   const auto outputNode =
-      graph.addNode(auralforge::graph::NodeType::audioOutput, {400.0f, 0.0f});
+      graph.addNode(openyourbox::graph::NodeType::audioOutput, {400.0f, 0.0f});
   const auto *inputElement = graph.findNode(inputNode);
   const auto *convolutionElement = graph.findNode(convolutionNode);
   const auto *outputElement = graph.findNode(outputNode);
@@ -98,7 +98,7 @@ int main() {
   }
   graph.setSeed(convolutionNode, 123456);
   const auto extraConvolution =
-      graph.addNode(auralforge::graph::NodeType::convolution, {200.0f, 80.0f});
+      graph.addNode(openyourbox::graph::NodeType::convolution, {200.0f, 80.0f});
   const auto freezeChains =
       graph.partitionFreezeChains({convolutionNode, extraConvolution});
   passed &=
@@ -119,10 +119,10 @@ int main() {
                          elements.isArray() && elements.getArray()->size() == 1,
                      "freeze JSON must contain only the selected graph");
 
-    auralforge::graph::FreezeSelectionResult freezeResult;
+    openyourbox::graph::FreezeSelectionResult freezeResult;
     freezeResult.requestId = freezeRequest->requestId;
     freezeResult.succeeded = true;
-    freezeResult.artifactPath = "/tmp/auralforge-test-blackbox.pt";
+    freezeResult.artifactPath = "/tmp/openyourbox-test-blackbox.pt";
     freezeResult.inputChannels = 2;
     freezeResult.outputChannels = 2;
     const auto frozen =
@@ -132,7 +132,7 @@ int main() {
     passed &= expect(
         frozen.has_value() && graph.findNode(*frozen) != nullptr &&
             graph.findNode(*frozen)->state ==
-                auralforge::graph::NodeState::frozenGold,
+                openyourbox::graph::NodeState::frozenGold,
         "frozen elements must use the Gold colour state");
     passed &= expect(
         frozen.has_value() && graph.findNode(*frozen) != nullptr &&
@@ -144,7 +144,7 @@ int main() {
                "unfreeze must restore the prior live elements in place");
   }
 
-  AuralForgeAudioProcessor original;
+  OpenYourBoxAudioProcessor original;
   original.setGraphState(graph.toValueTree());
   original.prepareToPlay(sampleRate, blockSize);
   passed &= expect(waitForGraphRuntime(original, 3),
@@ -178,7 +178,7 @@ int main() {
   auto expectedRecall = input;
   original.processBlock(expectedRecall, midi);
 
-  AuralForgeAudioProcessor restored;
+  OpenYourBoxAudioProcessor restored;
   restored.setStateInformation(savedState.getData(),
                                static_cast<int>(savedState.getSize()));
   restored.prepareToPlay(sampleRate, blockSize);
@@ -200,7 +200,7 @@ int main() {
       recallDifference < 1.0e-6f,
       "serialized parameters and weights must restore exact sonic state");
 
-  auralforge::graph::NodeGraph restoredGraph;
+  openyourbox::graph::NodeGraph restoredGraph;
   passed &=
       expect(restoredGraph.restoreFromValueTree(restored.getGraphState()),
              "serialized processor state must restore the graph document");
@@ -244,13 +244,13 @@ int main() {
   passed &= expect(dcMean < 0.001,
                    "post-graph DC blocker must reject sustained offset");
 
-  auralforge::graph::NodeGraph analysisGraph;
+  openyourbox::graph::NodeGraph analysisGraph;
   const auto analysisInput = analysisGraph.addNode(
-      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+      openyourbox::graph::NodeType::audioInput, {0.0f, 0.0f});
   const auto analysisActivation = analysisGraph.addNode(
-      auralforge::graph::NodeType::activation, {180.0f, 0.0f});
+      openyourbox::graph::NodeType::activation, {180.0f, 0.0f});
   const auto analysisOutput = analysisGraph.addNode(
-      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+      openyourbox::graph::NodeType::audioOutput, {360.0f, 0.0f});
   analysisGraph.connect(
       analysisGraph.findNode(analysisInput)->outputs.front().id,
       analysisGraph.findNode(analysisActivation)->inputs.front().id);
@@ -259,10 +259,10 @@ int main() {
       analysisGraph.findNode(analysisOutput)->inputs.front().id);
   analysisGraph.setFloatProperty(analysisActivation, "gain", 2.5f);
   const auto xy = analysisGraph.addNode(
-      auralforge::graph::NodeType::xyTrackpad, {0.0f, 120.0f});
+      openyourbox::graph::NodeType::xyTrackpad, {0.0f, 120.0f});
   analysisGraph.setConditioningPad(xy, 0.25f, -0.5f);
   const auto savedAnalysis = analysisGraph.toValueTree();
-  auralforge::graph::NodeGraph recalledAnalysis;
+  openyourbox::graph::NodeGraph recalledAnalysis;
   passed &= expect(recalledAnalysis.restoreFromValueTree(savedAnalysis),
                    "analysis graph with Gain and XY must restore");
   const auto *recalledActivation =
@@ -290,7 +290,7 @@ int main() {
   passed &= expect(gained.getMagnitude(0, 0, blockSize) > 0.0f,
                    "Gain on Activation must remain audible");
 
-  auralforge::graph::NodeGraph disconnected;
+  openyourbox::graph::NodeGraph disconnected;
   passed &=
       expect(disconnected.restoreFromValueTree(restored.getGraphState()),
              "connected graph state must restore for the silence check");
@@ -300,7 +300,7 @@ int main() {
     const auto *destinationNode =
         destination.has_value() ? disconnected.findNode(*destination) : nullptr;
     if (destinationNode != nullptr &&
-        destinationNode->type == auralforge::graph::NodeType::audioOutput)
+        destinationNode->type == openyourbox::graph::NodeType::audioOutput)
       outputLinks.push_back(link.id);
   }
   for (const auto linkId : outputLinks)
@@ -321,6 +321,6 @@ int main() {
                    "audio output with no input must produce silence");
 
   if (passed)
-    std::cout << "AuralForge processor integration tests passed\n";
+    std::cout << "OpenYourBox processor integration tests passed\n";
   return passed ? 0 : 1;
 }

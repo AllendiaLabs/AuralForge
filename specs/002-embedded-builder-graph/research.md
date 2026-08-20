@@ -10,10 +10,10 @@
 
 ## Decision 2: Use ML Forge interaction patterns as the UX reference, not as a second runtime
 
-- **Decision**: Mirror ML Forge’s node interactions, palette behavior, map view, and inline property layout while keeping AuralForge’s existing runtime ownership and plugin-specific rules.
-- **Rationale**: The spec explicitly asks for ML Forge-like graph editing, but the plugin still needs AuralForge-specific Blue/Gold execution behavior, freeze flow, and real-time audio safety.
+- **Decision**: Mirror ML Forge’s node interactions, palette behavior, map view, and inline property layout while keeping OpenYourBox’s existing runtime ownership and plugin-specific rules.
+- **Rationale**: The spec explicitly asks for ML Forge-like graph editing, but the plugin still needs OpenYourBox-specific Blue/Gold execution behavior, freeze flow, and real-time audio safety.
 - **Alternatives considered**:
-  - Pixel-perfect ML Forge duplication: rejected because AuralForge has different runtime semantics and constraints.
+  - Pixel-perfect ML Forge duplication: rejected because OpenYourBox has different runtime semantics and constraints.
   - Minimal graph tweaks without matching ML Forge patterns: rejected because it misses the user’s requested workflow target.
 
 ## Decision 3: Represent TCN as a single editable graph element with internal sub-layer ownership

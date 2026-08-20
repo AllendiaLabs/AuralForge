@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile an AuralForge selected graph into a local TorchScript artifact."""
+"""Compile an OpenYourBox selected graph into a local TorchScript artifact."""
 
 from __future__ import annotations
 
@@ -156,7 +156,7 @@ class ResidualTCN(nn.Module):
 
 
 def _activation(index: int) -> nn.Module:
-    """Return the activation represented by an AuralForge enum value."""
+    """Return the activation represented by an OpenYourBox enum value."""
     activations: tuple[nn.Module, ...] = (
         nn.ReLU(),
         ZeroPreservingSigmoid(),

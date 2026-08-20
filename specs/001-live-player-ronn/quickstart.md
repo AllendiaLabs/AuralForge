@@ -21,24 +21,24 @@ cmake --build . --config Release
 ```
 
 The build produces:
-- `AuralForge.vst3` in the VST3 output directory
-- `AuralForge.component` in the AU output directory
+- `OpenYourBox.vst3` in the VST3 output directory
+- `OpenYourBox.component` in the AU output directory
 
 ## Installation
 
 ```bash
 # VST3
-cp -r build/AuralForge_artefacts/Release/VST3/AuralForge.vst3 ~/Library/Audio/Plug-Ins/VST3/
+cp -r build/OpenYourBox_artefacts/Release/VST3/OpenYourBox.vst3 ~/Library/Audio/Plug-Ins/VST3/
 
 # AU
-cp -r build/AuralForge_artefacts/Release/AU/AuralForge.component ~/Library/Audio/Plug-Ins/Components/
+cp -r build/OpenYourBox_artefacts/Release/AU/OpenYourBox.component ~/Library/Audio/Plug-Ins/Components/
 ```
 
 ## Validation Scenarios
 
 ### V1: Plugin Loads and Processes Audio (SC-001, FR-001, FR-002)
 
-1. Open DAW, insert AuralForge on an audio track
+1. Open DAW, insert OpenYourBox on an audio track
 2. Route audio (file or live input) through the track
 3. Press play
 
@@ -81,7 +81,7 @@ cp -r build/AuralForge_artefacts/Release/AU/AuralForge.component ~/Library/Audio
 
 ### V6: Multiple Instances (SC-007, FR-011)
 
-1. Insert 4 instances of AuralForge on separate audio tracks
+1. Insert 4 instances of OpenYourBox on separate audio tracks
 2. Set different parameters on each instance
 3. Play all tracks simultaneously
 
@@ -91,7 +91,7 @@ cp -r build/AuralForge_artefacts/Release/AU/AuralForge.component ~/Library/Audio
 
 ```bash
 # VST3 validation
-/path/to/VST3PluginTestHost -t AuralForge.vst3
+/path/to/VST3PluginTestHost -t OpenYourBox.vst3
 
 # AU validation
 auval -v aufx Afge Afge
@@ -144,6 +144,6 @@ auval -v aufx Afge Afge
 Automated command:
 
 ```bash
-cmake --build build --target AuralForgeTests AuralForgeProcessorTests
+cmake --build build --target OpenYourBoxTests OpenYourBoxProcessorTests
 ctest --test-dir build --output-on-failure
 ```

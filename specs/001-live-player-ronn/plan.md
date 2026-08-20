@@ -61,8 +61,8 @@ specs/001-live-player-ronn/
 ### Source Code (repository root)
 
 ```text
-AuralForge/
-├── AuralForge.jucer                # JUCE project file (Projucer)
+OpenYourBox/
+├── OpenYourBox.jucer                # JUCE project file (Projucer)
 ├── Source/
 │   ├── PluginProcessor.h/.cpp      # JUCE audio processor (host interface, processBlock, state)
 │   ├── PluginEditor.h/.cpp         # JUCE editor (hosts Dear ImGui context)
@@ -88,7 +88,7 @@ AuralForge/
 CMakeLists.txt                      # Top-level CMake build at repository root
 ```
 
-**Structure Decision**: Single JUCE plugin project rooted at `AuralForge/`. Source organized into `dsp/` (audio/model), `graph/` (node visualization), `params/` (DAW parameters), and `ui/` (ImGui integration). This mirrors ML Forge's separation of engine/graph/ui but adapted for C++/JUCE.
+**Structure Decision**: Single JUCE plugin project rooted at `OpenYourBox/`. Source organized into `dsp/` (audio/model), `graph/` (node visualization), `params/` (DAW parameters), and `ui/` (ImGui integration). This mirrors ML Forge's separation of engine/graph/ui but adapted for C++/JUCE.
 
 ## Complexity Tracking
 

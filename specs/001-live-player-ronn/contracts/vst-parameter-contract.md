@@ -1,6 +1,6 @@
 # Contract: VST3/AU Parameter Interface
 
-**Scope**: DAW-facing parameter contract — how hosts and automation interact with AuralForge.
+**Scope**: DAW-facing parameter contract — how hosts and automation interact with OpenYourBox.
 
 ## Parameter List
 

@@ -6,7 +6,7 @@
 
 ## Summary
 
-Implement Phase 2 of AuralForge by turning the current graph view into an editable ML Forge-style node editor inside the VST, adding an element palette, inline per-node parameter editing, per-element seeded randomization, trackpad navigation, map view, manual freeze/unfreeze with Python-backed compilation, live performance metrics, Conv1D/TCN dilation, and a built-in DC blocker. The design keeps all user interaction inside the plugin UI, preserves zero-allocation audio-thread rules, and routes all expensive graph compilation/state transitions through GUI/background-thread preparation before atomic swap into real-time processing.
+Implement Phase 2 of OpenYourBox by turning the current graph view into an editable ML Forge-style node editor inside the VST, adding an element palette, inline per-node parameter editing, per-element seeded randomization, trackpad navigation, map view, manual freeze/unfreeze with Python-backed compilation, live performance metrics, Conv1D/TCN dilation, and a built-in DC blocker. The design keeps all user interaction inside the plugin UI, preserves zero-allocation audio-thread rules, and routes all expensive graph compilation/state transitions through GUI/background-thread preparation before atomic swap into real-time processing.
 
 ## Technical Context
 
@@ -58,7 +58,7 @@ specs/002-embedded-builder-graph/
 ### Source Code (repository root)
 
 ```text
-AuralForge/
+OpenYourBox/
 ├── Source/
 │   ├── PluginEditor.cpp
 │   ├── PluginEditor.h
@@ -100,7 +100,7 @@ AuralForge/
 │       └── RandomizeButton.h
 ├── Builds/
 ├── JuceLibraryCode/
-└── AuralForge.jucer
+└── OpenYourBox.jucer
 
 Tests/
 ├── LiveGraphEngineTests.cpp
@@ -112,7 +112,7 @@ Backend/
 └── freeze_worker.py
 ```
 
-**Structure Decision**: Keep the existing single-plugin structure. Feature work concentrates in `AuralForge/Source/graph`, `AuralForge/Source/ui`, `AuralForge/Source/dsp`, `AuralForge/Source/params`, and targeted integration coverage in `Tests/`.
+**Structure Decision**: Keep the existing single-plugin structure. Feature work concentrates in `OpenYourBox/Source/graph`, `OpenYourBox/Source/ui`, `OpenYourBox/Source/dsp`, `OpenYourBox/Source/params`, and targeted integration coverage in `Tests/`.
 
 ## Complexity Tracking
 

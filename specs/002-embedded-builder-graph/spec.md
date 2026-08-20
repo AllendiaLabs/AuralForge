@@ -21,7 +21,7 @@
 
 ### User Story 1 - Build a Custom Neural Network from the Element Menu (Priority: P1)
 
-A user opens AuralForge, opens the element menu (replacing the previous live TCN menu), and browses available elements: Audio Input, Audio Output, Linear, Conv1D, Activation Functions (ReLU, Sigmoid, Tanh, LeakyReLU), and TCN. The user drags elements onto the graph canvas, positions them freely, and connects them by drawing cables between compatible ports — following the same interaction logic as ML Forge. The resulting graph defines a custom neural network architecture that processes audio in real time.
+A user opens OpenYourBox, opens the element menu (replacing the previous live TCN menu), and browses available elements: Audio Input, Audio Output, Linear, Conv1D, Activation Functions (ReLU, Sigmoid, Tanh, LeakyReLU), and TCN. The user drags elements onto the graph canvas, positions them freely, and connects them by drawing cables between compatible ports — following the same interaction logic as ML Forge. The resulting graph defines a custom neural network architecture that processes audio in real time.
 
 **Why this priority**: The interactive graph editor is the foundational interaction model for Phase 2. Without the ability to place, move, connect, and configure elements, no other feature can function.
 

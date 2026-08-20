@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Validate Phase 2.2 end to end in the AuralForge plug-in editor.
+Validate Phase 2.2 end to end in the OpenYourBox plug-in editor.
 
 ## Prerequisites
 
@@ -112,8 +112,8 @@ ctest --test-dir build --output-on-failure
 
 | Check | Result |
 |-------|--------|
-| `AuralForgeLiveGraphTests` | PASS — dual-curve analysis, probe fallback, Knob→Merge compile/runtime, Knob ValueTree recall |
-| `AuralForgeProcessorTests` | PASS — Gain + XY persistence, audible Activation Gain path, existing freeze/silence/recall invariants |
-| `AuralForge_VST3` | PASS — Release build succeeded |
+| `OpenYourBoxLiveGraphTests` | PASS — dual-curve analysis, probe fallback, Knob→Merge compile/runtime, Knob ValueTree recall |
+| `OpenYourBoxProcessorTests` | PASS — Gain + XY persistence, audible Activation Gain path, existing freeze/silence/recall invariants |
+| `OpenYourBox_VST3` | PASS — Release build succeeded |
 
 Host-UI walkthrough of scenarios 1–9 remains recommended in Ableton after loading the VST3.

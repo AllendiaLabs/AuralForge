@@ -69,10 +69,10 @@ Series {
 
 ## Implementation Anchors
 
-- Snapshot generation: `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- Revision + live capture: `AuralForge/Source/PluginProcessor.*`, `LiveGraphPublisher.*`
-- Editor requests: `AuralForge/Source/PluginEditor.cpp`
-- Panel rendering: `AuralForge/Source/ui/InfoPanel.*`
+- Snapshot generation: `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- Revision + live capture: `OpenYourBox/Source/PluginProcessor.*`, `LiveGraphPublisher.*`
+- Editor requests: `OpenYourBox/Source/PluginEditor.cpp`
+- Panel rendering: `OpenYourBox/Source/ui/InfoPanel.*`
 
 ### Dual-curve N-channel notes (T002)
 
@@ -94,5 +94,5 @@ Series {
 Implemented in Phase 2.2 (`tasks.md` T004–T051).
 
 - Dual chain/element-only snapshots are produced by `LiveGraphEngine::analyse` off the audio thread.
-- N-channel series, probe fallback, transfer marker, Gold boundary analysis, and revision tagging are covered by `AuralForgeLiveGraphTests` / `AuralForgeProcessorTests`.
+- N-channel series, probe fallback, transfer marker, Gold boundary analysis, and revision tagging are covered by `OpenYourBoxLiveGraphTests` / `OpenYourBoxProcessorTests`.
 - Editor consumption is `InfoPanel` + `PluginEditor` with 12 Hz refresh throttling.

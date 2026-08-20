@@ -68,10 +68,10 @@ Knob Input and XY Trackpad are UI/control sources and MUST NOT be included in To
 
 ## Implementation Anchors
 
-- Types + pins: `AuralForge/Source/graph/GraphTypes.h`
-- Validation + persistence: `AuralForge/Source/graph/NodeGraph.cpp`
-- Rendering: `AuralForge/Source/graph/NodeRenderer.cpp`
-- Editor orchestration: `AuralForge/Source/PluginEditor.cpp`
+- Types + pins: `OpenYourBox/Source/graph/GraphTypes.h`
+- Validation + persistence: `OpenYourBox/Source/graph/NodeGraph.cpp`
+- Rendering: `OpenYourBox/Source/graph/NodeRenderer.cpp`
+- Editor orchestration: `OpenYourBox/Source/PluginEditor.cpp`
 
 ### Knob / XY / Merge conditioning notes (T003)
 

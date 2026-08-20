@@ -26,7 +26,7 @@
 
 ### User Story 1 - Load Plugin and Process Audio Immediately (Priority: P1)
 
-A music producer opens their DAW, inserts AuralForge as a VST3/AU effect plugin on an audio track (or bus). A default TCN configuration is loaded automatically. When audio plays through the track, the plugin immediately processes it through the neural network, producing a distortion/overdrive effect with zero setup, no training, and no configuration.
+A music producer opens their DAW, inserts OpenYourBox as a VST3/AU effect plugin on an audio track (or bus). A default TCN configuration is loaded automatically. When audio plays through the track, the plugin immediately processes it through the neural network, producing a distortion/overdrive effect with zero setup, no training, and no configuration.
 
 **Why this priority**: This is the fundamental value proposition of Phase 1 — instant audio processing from the moment the plugin loads. Without this, there is no product.
 
@@ -34,9 +34,9 @@ A music producer opens their DAW, inserts AuralForge as a VST3/AU effect plugin 
 
 **Acceptance Scenarios**:
 
-1. **Given** a DAW with AuralForge inserted on an audio track, **When** audio plays through the track, **Then** the plugin processes the audio through the default TCN and outputs the effected signal within the buffer latency window.
-2. **Given** a freshly installed AuralForge plugin, **When** the user opens it for the first time, **Then** a default TCN model (depth 4, reasonable kernel size and channel count) is loaded automatically and the plugin is ready to process audio without any manual steps.
-3. **Given** the plugin is loaded and processing audio, **When** the DAW is also running other plugins on other tracks, **Then** AuralForge does not cause audio dropouts or glitches at a 256-sample buffer size.
+1. **Given** a DAW with OpenYourBox inserted on an audio track, **When** audio plays through the track, **Then** the plugin processes the audio through the default TCN and outputs the effected signal within the buffer latency window.
+2. **Given** a freshly installed OpenYourBox plugin, **When** the user opens it for the first time, **Then** a default TCN model (depth 4, reasonable kernel size and channel count) is loaded automatically and the plugin is ready to process audio without any manual steps.
+3. **Given** the plugin is loaded and processing audio, **When** the DAW is also running other plugins on other tracks, **Then** OpenYourBox does not cause audio dropouts or glitches at a 256-sample buffer size.
 
 ---
 
@@ -100,9 +100,9 @@ The plugin loads, scans, and operates correctly as both VST3 and AU formats acro
 
 **Acceptance Scenarios**:
 
-1. **Given** AuralForge is installed, **When** the DAW scans for plugins, **Then** AuralForge appears in the plugin list and passes validation without errors.
-2. **Given** a DAW project with AuralForge and specific parameter settings, **When** the user saves and reopens the project, **Then** all TCN parameters and the current weight state are restored exactly.
-3. **Given** multiple instances of AuralForge on different tracks, **When** all instances process audio simultaneously, **Then** each instance operates independently without interference or shared state corruption.
+1. **Given** OpenYourBox is installed, **When** the DAW scans for plugins, **Then** OpenYourBox appears in the plugin list and passes validation without errors.
+2. **Given** a DAW project with OpenYourBox and specific parameter settings, **When** the user saves and reopens the project, **Then** all TCN parameters and the current weight state are restored exactly.
+3. **Given** multiple instances of OpenYourBox on different tracks, **When** all instances process audio simultaneously, **Then** each instance operates independently without interference or shared state corruption.
 
 ---
 

@@ -16,7 +16,7 @@ Extend the existing JUCE + Dear ImGui plug-in with Phase 2.2 capabilities: per-e
 
 **Storage**: JUCE `ValueTree` graph document for topology, node properties, viewport, seeds, conditioning element state (Knob/XY values, positions), and per-node analysis view preferences; local TorchScript artifacts for frozen nodes
 
-**Testing**: CTest console apps (`AuralForgeProcessorTests`, `AuralForgeLiveGraphTests`, `AuralForgeTests`) plus Python freeze-worker tests
+**Testing**: CTest console apps (`OpenYourBoxProcessorTests`, `OpenYourBoxLiveGraphTests`, `OpenYourBoxTests`) plus Python freeze-worker tests
 
 **Target Platform**: Desktop audio plug-in on macOS first (AU/VST3 via CMake)
 
@@ -59,7 +59,7 @@ specs/003-signal-analysis-controls/
 ### Source Code (repository root)
 
 ```text
-AuralForge/Source/
+OpenYourBox/Source/
 ├── graph/          # GraphTypes, NodeGraph, NodeRenderer — new node types, pin kinds, persistence
 ├── dsp/            # LiveGraphEngine — gain, conditioning merge, dual analysis snapshots
 ├── ui/             # InfoPanel — chain/element plots, N-channel overlay, transfer marker

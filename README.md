@@ -1,2 +1,2 @@
-# AuralForge
-AuralForge: The AI sandbox where sounds are melted, bent, and reforged live inside your DAW.
+# OpenYourBox
+OpenYourBox: The AI sandbox where sounds are melted, bent, and reshaped live inside your DAW.

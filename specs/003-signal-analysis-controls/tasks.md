@@ -20,11 +20,11 @@ description: "Task list for Signal Analysis & Expressive Input Controls (Phase 2
 
 ## Path Conventions
 
-- Plug-in code: `AuralForge/Source/`
-- Graph document: `AuralForge/Source/graph/`
-- UI: `AuralForge/Source/ui/`
-- DSP/runtime: `AuralForge/Source/dsp/`
-- Editor/processor: `AuralForge/Source/PluginEditor.*`, `PluginProcessor.*`
+- Plug-in code: `OpenYourBox/Source/`
+- Graph document: `OpenYourBox/Source/graph/`
+- UI: `OpenYourBox/Source/ui/`
+- DSP/runtime: `OpenYourBox/Source/dsp/`
+- Editor/processor: `OpenYourBox/Source/PluginEditor.*`, `PluginProcessor.*`
 - Tests: `Tests/`
 
 ---
@@ -45,17 +45,17 @@ description: "Task list for Signal Analysis & Expressive Input Controls (Phase 2
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [X] T004 Add `knobInput`, `xyTrackpad`, `SignalKind`, and analysis preference types in `AuralForge/Source/graph/GraphTypes.h`
-- [X] T005 [P] Add `AnalysisSnapshot`, dual curve families, and revision helpers in `AuralForge/Source/dsp/LiveGraphEngine.h`
-- [X] T006 Extend connection validation for audio vs conditioning pins in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T007 Extend Merge to accept conditioning inputs and default `c = 0` when absent in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T008 Implement Merge conditioning combine behavior in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T009 Add graph `ValueTree` serialization for conditioning nodes, gain, and analysis prefs in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T010 Update graph document interfaces for Phase 2.2 in `AuralForge/Source/graph/NodeGraph.h`
-- [X] T011 [P] Add editor analysis/conditioning callback hooks in `AuralForge/Source/graph/NodeRenderer.h`
-- [X] T012 [P] Add graph revision tokens and live-capture publication for transfer marker in `AuralForge/Source/PluginProcessor.h`
-- [X] T013 Implement revision invalidation and live-capture handoff in `AuralForge/Source/PluginProcessor.cpp`
-- [X] T014 Wire graph-state invalidation orchestration in `AuralForge/Source/PluginEditor.h`
+- [X] T004 Add `knobInput`, `xyTrackpad`, `SignalKind`, and analysis preference types in `OpenYourBox/Source/graph/GraphTypes.h`
+- [X] T005 [P] Add `AnalysisSnapshot`, dual curve families, and revision helpers in `OpenYourBox/Source/dsp/LiveGraphEngine.h`
+- [X] T006 Extend connection validation for audio vs conditioning pins in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T007 Extend Merge to accept conditioning inputs and default `c = 0` when absent in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T008 Implement Merge conditioning combine behavior in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T009 Add graph `ValueTree` serialization for conditioning nodes, gain, and analysis prefs in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T010 Update graph document interfaces for Phase 2.2 in `OpenYourBox/Source/graph/NodeGraph.h`
+- [X] T011 [P] Add editor analysis/conditioning callback hooks in `OpenYourBox/Source/graph/NodeRenderer.h`
+- [X] T012 [P] Add graph revision tokens and live-capture publication for transfer marker in `OpenYourBox/Source/PluginProcessor.h`
+- [X] T013 Implement revision invalidation and live-capture handoff in `OpenYourBox/Source/PluginProcessor.cpp`
+- [X] T014 Wire graph-state invalidation orchestration in `OpenYourBox/Source/PluginEditor.h`
 
 **Checkpoint**: Shared types, Merge conditioning, persistence, and runtime hooks are ready.
 
@@ -69,15 +69,15 @@ description: "Task list for Signal Analysis & Expressive Input Controls (Phase 2
 
 ### Implementation for User Story 1
 
-- [X] T015 [P] [US1] Implement chain-path analysis compile/run in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T016 [P] [US1] Implement element-only isolated analysis path in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T017 [US1] Implement live-preferred / white-noise probe fallback in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T018 [US1] Implement Gold BlackBox boundary analysis parity in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T019 [P] [US1] Add analysis panel state and snapshot consumption API in `AuralForge/Source/ui/InfoPanel.h`
-- [X] T020 [US1] Render chain vs element-only transfer/frequency/phase plots with N-channel legend in `AuralForge/Source/ui/InfoPanel.cpp`
-- [X] T021 [US1] Render transfer live marker on chain curve during playback only in `AuralForge/Source/ui/InfoPanel.cpp`
-- [X] T022 [US1] Add analysis request orchestration and stale-snapshot handling in `AuralForge/Source/PluginEditor.cpp`
-- [X] T023 [US1] Expose analysis entry points on Blue and Gold nodes in `AuralForge/Source/graph/NodeRenderer.cpp`
+- [X] T015 [P] [US1] Implement chain-path analysis compile/run in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T016 [P] [US1] Implement element-only isolated analysis path in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T017 [US1] Implement live-preferred / white-noise probe fallback in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T018 [US1] Implement Gold BlackBox boundary analysis parity in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T019 [P] [US1] Add analysis panel state and snapshot consumption API in `OpenYourBox/Source/ui/InfoPanel.h`
+- [X] T020 [US1] Render chain vs element-only transfer/frequency/phase plots with N-channel legend in `OpenYourBox/Source/ui/InfoPanel.cpp`
+- [X] T021 [US1] Render transfer live marker on chain curve during playback only in `OpenYourBox/Source/ui/InfoPanel.cpp`
+- [X] T022 [US1] Add analysis request orchestration and stale-snapshot handling in `OpenYourBox/Source/PluginEditor.cpp`
+- [X] T023 [US1] Expose analysis entry points on Blue and Gold nodes in `OpenYourBox/Source/graph/NodeRenderer.cpp`
 - [X] T024 [US1] Add dual-curve, probe-fallback, and Gold-parity regression coverage in `Tests/ProcessorIntegrationTests.cpp`
 
 **Checkpoint**: User Story 1 independently validates analysis views per `quickstart.md` scenarios 1–3 and 8.
@@ -92,12 +92,12 @@ description: "Task list for Signal Analysis & Expressive Input Controls (Phase 2
 
 ### Implementation for User Story 2
 
-- [X] T025 [P] [US2] Register Gain property on Activation and TCN nodes in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T026 [P] [US2] Render and validate Gain inline property in `AuralForge/Source/graph/NodeRenderer.cpp`
-- [X] T027 [US2] Propagate Gain edits through editor recompile path in `AuralForge/Source/PluginEditor.cpp`
-- [X] T028 [US2] Apply Gain scaling in Activation execution path in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T029 [US2] Apply Gain scaling in TCN execution path in `AuralForge/Source/dsp/TCNModel.cpp`
-- [X] T030 [US2] Invalidate analysis snapshots when Gain changes in `AuralForge/Source/PluginProcessor.cpp`
+- [X] T025 [P] [US2] Register Gain property on Activation and TCN nodes in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T026 [P] [US2] Render and validate Gain inline property in `OpenYourBox/Source/graph/NodeRenderer.cpp`
+- [X] T027 [US2] Propagate Gain edits through editor recompile path in `OpenYourBox/Source/PluginEditor.cpp`
+- [X] T028 [US2] Apply Gain scaling in Activation execution path in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T029 [US2] Apply Gain scaling in TCN execution path in `OpenYourBox/Source/dsp/TCNModel.cpp`
+- [X] T030 [US2] Invalidate analysis snapshots when Gain changes in `OpenYourBox/Source/PluginProcessor.cpp`
 - [X] T031 [US2] Add Gain save/restore and audible-change regression in `Tests/ProcessorIntegrationTests.cpp`
 
 **Checkpoint**: User Story 2 independently validates `quickstart.md` scenario 4.
@@ -112,12 +112,12 @@ description: "Task list for Signal Analysis & Expressive Input Controls (Phase 2
 
 ### Implementation for User Story 3
 
-- [X] T032 [P] [US3] Implement Knob Input node factory, pins, and default properties in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T033 [US3] Add Knob Input to element menu and node rendering in `AuralForge/Source/graph/NodeRenderer.cpp`
-- [X] T034 [US3] Accept Knob→Merge and Knob→element connections in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T035 [US3] Publish Knob conditioning values into runtime compile context in `AuralForge/Source/PluginEditor.cpp`
-- [X] T036 [US3] Consume Knob conditioning in live graph forward path in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T037 [US3] Persist and restore Knob node state in `AuralForge/Source/graph/NodeGraph.cpp`
+- [X] T032 [P] [US3] Implement Knob Input node factory, pins, and default properties in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T033 [US3] Add Knob Input to element menu and node rendering in `OpenYourBox/Source/graph/NodeRenderer.cpp`
+- [X] T034 [US3] Accept Knob→Merge and Knob→element connections in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T035 [US3] Publish Knob conditioning values into runtime compile context in `OpenYourBox/Source/PluginEditor.cpp`
+- [X] T036 [US3] Consume Knob conditioning in live graph forward path in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T037 [US3] Persist and restore Knob node state in `OpenYourBox/Source/graph/NodeGraph.cpp`
 - [X] T038 [US3] Add Knob routing and persistence regression in `Tests/LiveGraphEngineTests.cpp`
 
 **Checkpoint**: User Story 3 independently validates `quickstart.md` scenarios 5 and 7 (Knob path).
@@ -132,12 +132,12 @@ description: "Task list for Signal Analysis & Expressive Input Controls (Phase 2
 
 ### Implementation for User Story 4
 
-- [X] T039 [P] [US4] Implement XY Trackpad node factory, X/Y pins, and pad state in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T040 [US4] Add XY Trackpad to element menu and pad UI rendering in `AuralForge/Source/graph/NodeRenderer.cpp`
-- [X] T041 [US4] Accept XY→Merge and XY→element connections in `AuralForge/Source/graph/NodeGraph.cpp`
-- [X] T042 [US4] Publish XY conditioning into runtime compile context in `AuralForge/Source/PluginEditor.cpp`
-- [X] T043 [US4] Consume XY conditioning in live graph forward path in `AuralForge/Source/dsp/LiveGraphEngine.cpp`
-- [X] T044 [US4] Persist and restore XY node state in `AuralForge/Source/graph/NodeGraph.cpp`
+- [X] T039 [P] [US4] Implement XY Trackpad node factory, X/Y pins, and pad state in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T040 [US4] Add XY Trackpad to element menu and pad UI rendering in `OpenYourBox/Source/graph/NodeRenderer.cpp`
+- [X] T041 [US4] Accept XY→Merge and XY→element connections in `OpenYourBox/Source/graph/NodeGraph.cpp`
+- [X] T042 [US4] Publish XY conditioning into runtime compile context in `OpenYourBox/Source/PluginEditor.cpp`
+- [X] T043 [US4] Consume XY conditioning in live graph forward path in `OpenYourBox/Source/dsp/LiveGraphEngine.cpp`
+- [X] T044 [US4] Persist and restore XY node state in `OpenYourBox/Source/graph/NodeGraph.cpp`
 - [X] T045 [US4] Add XY routing, Merge combo, and persistence regression in `Tests/ProcessorIntegrationTests.cpp`
 
 **Checkpoint**: User Story 4 independently validates `quickstart.md` scenarios 6 and 7 (XY path).
@@ -148,8 +148,8 @@ description: "Task list for Signal Analysis & Expressive Input Controls (Phase 2
 
 **Purpose**: Cross-story integration, performance, documentation, and release readiness.
 
-- [X] T046 [P] Validate multi-channel analysis readability (high N legend/styling) in `AuralForge/Source/ui/InfoPanel.cpp`
-- [X] T047 Optimize analysis refresh throttling and 60 FPS guardrails in `AuralForge/Source/PluginEditor.cpp`
+- [X] T046 [P] Validate multi-channel analysis readability (high N legend/styling) in `OpenYourBox/Source/ui/InfoPanel.cpp`
+- [X] T047 Optimize analysis refresh throttling and 60 FPS guardrails in `OpenYourBox/Source/PluginEditor.cpp`
 - [X] T048 [P] Run full `quickstart.md` validation and update outcomes in `specs/003-signal-analysis-controls/quickstart.md`
 - [X] T049 [P] Update contract implementation status notes in `specs/003-signal-analysis-controls/contracts/analysis-runtime-contract.md`
 - [X] T050 [P] Update contract implementation status notes in `specs/003-signal-analysis-controls/contracts/graph-control-ui-contract.md`
@@ -193,17 +193,17 @@ US3 and US4 can run in parallel after Phase 2; US4 does not require US3 completi
 
 ```bash
 # Snapshot paths in parallel:
-Task: "Implement chain-path analysis compile/run in AuralForge/Source/dsp/LiveGraphEngine.cpp"
-Task: "Implement element-only isolated analysis path in AuralForge/Source/dsp/LiveGraphEngine.cpp"
-Task: "Add analysis panel state and snapshot consumption API in AuralForge/Source/ui/InfoPanel.h"
+Task: "Implement chain-path analysis compile/run in OpenYourBox/Source/dsp/LiveGraphEngine.cpp"
+Task: "Implement element-only isolated analysis path in OpenYourBox/Source/dsp/LiveGraphEngine.cpp"
+Task: "Add analysis panel state and snapshot consumption API in OpenYourBox/Source/ui/InfoPanel.h"
 ```
 
 ## Parallel Example: User Story 3 + 4 (after Phase 2)
 
 ```bash
 # Different developers on conditioning source nodes:
-Task: "Implement Knob Input node factory ... in AuralForge/Source/graph/NodeGraph.cpp"
-Task: "Implement XY Trackpad node factory ... in AuralForge/Source/graph/NodeGraph.cpp"
+Task: "Implement Knob Input node factory ... in OpenYourBox/Source/graph/NodeGraph.cpp"
+Task: "Implement XY Trackpad node factory ... in OpenYourBox/Source/graph/NodeGraph.cpp"
 ```
 
 ---
