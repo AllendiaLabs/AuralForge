@@ -12,6 +12,52 @@ void migrateLegacyMixerNode(auralforge::graph::GraphNode &node,
 void normalizeMergeNodeProperties(auralforge::graph::GraphNode &node);
 
 /**
+ * @brief Ensures Activation and TCN nodes expose a validated Gain property.
+ * @param node Loaded or newly created processing node.
+ */
+void normalizeGainProperty(auralforge::graph::GraphNode &node) {
+  using auralforge::graph::NodeType;
+  using auralforge::graph::PropertyKind;
+  if (node.type != NodeType::activation && node.type != NodeType::tcn)
+    return;
+  for (auto &property : node.properties) {
+    if (property.key != "gain")
+      continue;
+    property.kind = PropertyKind::real;
+    property.label = "Gain";
+    property.floatMinimum = auralforge::graph::gainMinimum;
+    property.floatMaximum = auralforge::graph::gainMaximum;
+    if (property.floatValue <= 0.0f)
+      property.floatValue = auralforge::graph::gainDefault;
+    property.setFloatValue(property.floatValue);
+    return;
+  }
+  auralforge::graph::NodeProperty gain;
+  gain.key = "gain";
+  gain.label = "Gain";
+  gain.kind = PropertyKind::real;
+  gain.floatValue = auralforge::graph::gainDefault;
+  gain.floatMinimum = auralforge::graph::gainMinimum;
+  gain.floatMaximum = auralforge::graph::gainMaximum;
+  node.properties.push_back(std::move(gain));
+}
+
+/**
+ * @brief Restores conditioning pin metadata on Knob/XY source nodes.
+ * @param node Loaded source node.
+ */
+void normalizeConditioningPins(auralforge::graph::GraphNode &node) {
+  using auralforge::graph::SignalKind;
+  if (!auralforge::graph::isConditioningSourceType(node.type))
+    return;
+  for (auto &pin : node.outputs) {
+    pin.signalKind = SignalKind::conditioning;
+    if (pin.shape.channels <= 0)
+      pin.shape.channels = 1;
+  }
+}
+
+/**
  * @brief Reads an integer node property when present.
  * @param node Graph node to inspect.
  * @param key Property key.
@@ -35,6 +81,16 @@ int readNodeProperty(const auralforge::graph::GraphNode &node, const char *key,
  */
 int mergeModeFor(const auralforge::graph::GraphNode &node) {
   return std::clamp(readNodeProperty(node, "mode", 0), 0, 2);
+}
+
+/**
+ * @brief Returns whether two Merge input widths can share add/multiply.
+ * @param left First width, or zero when unknown.
+ * @param right Second width, or zero when unknown.
+ * @return True when the widths match or either side can broadcast from 1.
+ */
+bool channelsAreBroadcastCompatible(int left, int right) noexcept {
+  return left == 0 || right == 0 || left == right || left == 1 || right == 1;
 }
 
 int resolvePinChannels(const auralforge::graph::NodeGraph &graph,
@@ -75,12 +131,13 @@ int computeMergeOutputChannels(const auralforge::graph::NodeGraph &graph,
       outputChannels += channels;
     return std::clamp(outputChannels, 0, 512);
   }
-  const auto first = connectedChannels.front();
+  int width = 0;
   for (const auto channels : connectedChannels) {
-    if (channels != first)
+    if (!channelsAreBroadcastCompatible(width, channels))
       return 0;
+    width = std::max(width, channels);
   }
-  return first;
+  return width;
 }
 
 int resolvePinChannels(const auralforge::graph::NodeGraph &graph,
@@ -133,6 +190,9 @@ int resolvePinChannels(const auralforge::graph::NodeGraph &graph,
     if (node->inputs.empty())
       return 0;
     return resolvePinChannels(graph, node->inputs.front().id, visiting);
+  case NodeType::knobInput:
+  case NodeType::xyTrackpad:
+    return 1;
   default:
     return 0;
   }
@@ -220,7 +280,8 @@ bool mergeInputConnectionIsValid(const auralforge::graph::NodeGraph &graph,
       visiting.clear();
       const auto existingChannels =
           resolvePinChannels(graph, link.sourcePinId, visiting);
-      if (existingChannels > 0 && existingChannels != newChannels)
+      if (existingChannels > 0 &&
+          !channelsAreBroadcastCompatible(existingChannels, newChannels))
         return false;
       break;
     }
@@ -239,6 +300,9 @@ juce::Colour colourForType(auralforge::graph::NodeType type,
     return auralforge::graph::audioInputColour;
   case NodeType::audioOutput:
     return auralforge::graph::audioOutputColour;
+  case NodeType::knobInput:
+  case NodeType::xyTrackpad:
+    return auralforge::graph::conditioningColour;
   default:
     return auralforge::graph::liveBlueColour;
   }
@@ -263,6 +327,10 @@ const char *nodeTypeName(auralforge::graph::NodeType type) noexcept {
     return "merge";
   case NodeType::blackBox:
     return "blackbox";
+  case NodeType::knobInput:
+    return "knob_input";
+  case NodeType::xyTrackpad:
+    return "xy_trackpad";
   }
   return "tcn";
 }
@@ -284,6 +352,10 @@ auralforge::graph::NodeType nodeTypeFromName(const juce::String &name) {
     return NodeType::merge;
   if (name == "blackbox")
     return NodeType::blackBox;
+  if (name == "knob_input")
+    return NodeType::knobInput;
+  if (name == "xy_trackpad")
+    return NodeType::xyTrackpad;
   return NodeType::tcn;
 }
 
@@ -309,6 +381,11 @@ juce::ValueTree nodeToTree(const auralforge::graph::GraphNode &node) {
   tree.setProperty("artifactPath", juce::String(node.artifactPath), nullptr);
   tree.setProperty("sourceSubgraph", juce::String(node.sourceSubgraph),
                    nullptr);
+  tree.setProperty("analysisView", static_cast<int>(node.selectedAnalysisView),
+                   nullptr);
+  tree.setProperty("conditioningValue", node.conditioningValue, nullptr);
+  tree.setProperty("conditioningX", node.conditioningX, nullptr);
+  tree.setProperty("conditioningY", node.conditioningY, nullptr);
 
   if (node.metrics.has_value()) {
     tree.setProperty("compileMs", node.metrics->compileTimeMilliseconds,
@@ -327,6 +404,12 @@ juce::ValueTree nodeToTree(const auralforge::graph::GraphNode &node) {
           child.setProperty("kind", kind, nullptr);
           child.setProperty("channels", pin.shape.channels, nullptr);
           child.setProperty("domain", juce::String(pin.shape.domain), nullptr);
+          child.setProperty("signalKind",
+                            pin.signalKind == auralforge::graph::SignalKind::
+                                                  conditioning
+                                ? "conditioning"
+                                : "audio",
+                            nullptr);
           tree.appendChild(child, nullptr);
         }
       };
@@ -345,6 +428,9 @@ juce::ValueTree nodeToTree(const auralforge::graph::GraphNode &node) {
     for (const auto &choice : property.choices)
       choices.add(choice);
     child.setProperty("choices", choices.joinIntoString("|"), nullptr);
+    child.setProperty("floatValue", property.floatValue, nullptr);
+    child.setProperty("floatMinimum", property.floatMinimum, nullptr);
+    child.setProperty("floatMaximum", property.floatMaximum, nullptr);
     tree.appendChild(child, nullptr);
   }
   return tree;
@@ -373,6 +459,14 @@ auralforge::graph::GraphNode nodeFromTree(const juce::ValueTree &tree) {
       static_cast<bool>(tree.getProperty("useExplicitSeed", false));
   node.artifactPath = tree["artifactPath"].toString().toStdString();
   node.sourceSubgraph = tree["sourceSubgraph"].toString().toStdString();
+  node.selectedAnalysisView = static_cast<AnalysisView>(std::clamp(
+      static_cast<int>(tree.getProperty("analysisView", 0)), 0, 3));
+  node.conditioningValue = auralforge::graph::clampConditioning(
+      static_cast<float>(tree.getProperty("conditioningValue", 0.0)));
+  node.conditioningX = auralforge::graph::clampConditioning(
+      static_cast<float>(tree.getProperty("conditioningX", 0.0)));
+  node.conditioningY = auralforge::graph::clampConditioning(
+      static_cast<float>(tree.getProperty("conditioningY", 0.0)));
 
   if (tree.hasProperty("inferenceMs")) {
     node.metrics =
@@ -390,6 +484,10 @@ auralforge::graph::GraphNode nodeFromTree(const juce::ValueTree &tree) {
       pin.shape.channels = static_cast<int>(child["channels"]);
       pin.shape.domain =
           child.getProperty("domain", "audio").toString().toStdString();
+      pin.signalKind =
+          child.getProperty("signalKind", "audio").toString() == "conditioning"
+              ? SignalKind::conditioning
+              : SignalKind::audio;
       (pin.kind == PinKind::input ? node.inputs : node.outputs)
           .push_back(std::move(pin));
     } else if (child.hasType("Property")) {
@@ -405,11 +503,19 @@ auralforge::graph::GraphNode nodeFromTree(const juce::ValueTree &tree) {
           juce::StringArray::fromTokens(child["choices"].toString(), "|", "");
       for (const auto &choice : choices)
         property.choices.push_back(choice.toStdString());
+      property.floatValue =
+          static_cast<float>(child.getProperty("floatValue", 0.0));
+      property.floatMinimum =
+          static_cast<float>(child.getProperty("floatMinimum", 0.0));
+      property.floatMaximum =
+          static_cast<float>(child.getProperty("floatMaximum", 1.0));
       node.properties.push_back(std::move(property));
     }
   }
   migrateLegacyMixerNode(node, tree["type"].toString());
   normalizeMergeNodeProperties(node);
+  normalizeGainProperty(node);
+  normalizeConditioningPins(node);
   return node;
 }
 
@@ -557,7 +663,8 @@ void NodeGraph::ensureFixedStereoIo() {
 std::optional<std::int32_t>
 NodeGraph::insertNodeOnLink(std::int32_t linkId, NodeType type,
                             juce::Point<float> position) {
-  if (isFixedIoType(type) || type == NodeType::blackBox)
+  if (isFixedIoType(type) || type == NodeType::blackBox ||
+      isConditioningSourceType(type))
     return std::nullopt;
   const auto *link = findLink(linkId);
   if (link == nullptr)
@@ -671,18 +778,25 @@ ConnectionResult NodeGraph::connect(std::int32_t firstPinId,
     return {false, "Cycles are not allowed in the audio graph"};
 
   const auto *destinationNodePtr = findNode(*destinationNode);
+  const auto *sourceNodePtr = findNode(*sourceNode);
+  const bool sourceIsConditioning =
+      (source != nullptr &&
+       source->signalKind == SignalKind::conditioning) ||
+      (sourceNodePtr != nullptr &&
+       isConditioningSourceType(sourceNodePtr->type));
+
   if (destinationNodePtr != nullptr &&
       destinationNodePtr->type == NodeType::merge &&
-      destination->kind == PinKind::input &&
+      destination->kind == PinKind::input && !sourceIsConditioning &&
       !mergeInputConnectionIsValid(*this, *destinationNodePtr, source->id))
     return {false,
             "Merge add/multiply inputs must share the same channel count"};
 
-  const auto *sourceNodePtr = findNode(*sourceNode);
   if (sourceNodePtr != nullptr && sourceNodePtr->type == NodeType::merge)
     updateMergeOutputShape(*this, *const_cast<GraphNode *>(sourceNodePtr));
 
-  if (!source->shape.isCompatibleWith(destination->shape)) {
+  if (!sourceIsConditioning &&
+      !source->shape.isCompatibleWith(destination->shape)) {
     if (sourceNodePtr != nullptr && sourceNodePtr->type == NodeType::merge) {
       std::unordered_set<std::int32_t> visiting;
       const auto outputChannels =
@@ -772,6 +886,47 @@ bool NodeGraph::setProperty(std::int32_t nodeId, const std::string &key,
   return true;
 }
 
+bool NodeGraph::setFloatProperty(std::int32_t nodeId, const std::string &key,
+                                 float value) {
+  auto *node = findNode(nodeId);
+  if (node == nullptr || node->state == NodeState::frozenGold)
+    return false;
+  const auto property = std::find_if(
+      node->properties.begin(), node->properties.end(),
+      [&key](const NodeProperty &candidate) { return candidate.key == key; });
+  if (property == node->properties.end() ||
+      property->kind != PropertyKind::real)
+    return false;
+  property->setFloatValue(value);
+  return true;
+}
+
+bool NodeGraph::setConditioningValue(std::int32_t nodeId, float value) {
+  auto *node = findNode(nodeId);
+  if (node == nullptr || node->type != NodeType::knobInput)
+    return false;
+  node->conditioningValue = clampConditioning(value);
+  return true;
+}
+
+bool NodeGraph::setConditioningPad(std::int32_t nodeId, float x, float y) {
+  auto *node = findNode(nodeId);
+  if (node == nullptr || node->type != NodeType::xyTrackpad)
+    return false;
+  node->conditioningX = clampConditioning(x);
+  node->conditioningY = clampConditioning(y);
+  return true;
+}
+
+bool NodeGraph::setSelectedAnalysisView(std::int32_t nodeId,
+                                        AnalysisView view) {
+  auto *node = findNode(nodeId);
+  if (node == nullptr)
+    return false;
+  node->selectedAnalysisView = view;
+  return true;
+}
+
 bool NodeGraph::setSeed(std::int32_t nodeId, std::int32_t seed) {
   auto *node = findNode(nodeId);
   if (node == nullptr || !node->hasWeights ||
@@ -793,6 +948,7 @@ NodeGraph::freezeSelection(const std::vector<std::int32_t> &selectedNodeIds,
   for (const auto nodeId : selectedNodeIds) {
     const auto *node = findNode(nodeId);
     if (node == nullptr || isFixedIoType(node->type) ||
+        isConditioningSourceType(node->type) ||
         node->state != NodeState::liveBlue)
       return std::nullopt;
   }
@@ -895,6 +1051,7 @@ std::optional<FreezeSelectionRequest> NodeGraph::createFreezeRequest(
   for (const auto nodeId : selectedNodeIds) {
     const auto *node = findNode(nodeId);
     if (node == nullptr || isFixedIoType(node->type) ||
+        isConditioningSourceType(node->type) ||
         node->state != NodeState::liveBlue)
       return std::nullopt;
   }
@@ -1204,13 +1361,15 @@ GraphNode NodeGraph::makeNode(NodeType type, juce::Point<float> position) {
       type == NodeType::blackBox ? NodeState::frozenGold : NodeState::liveBlue;
   node.colour = colourForType(type, node.state);
 
-  const auto addInput = [&](const char *label = "in", int channels = 0) {
+  const auto addInput = [&](const char *label = "in", int channels = 0,
+                            SignalKind kind = SignalKind::audio) {
     node.inputs.push_back(
-        {nextPinId++, label, PinKind::input, {channels, "audio"}});
+        {nextPinId++, label, PinKind::input, {channels, "audio"}, kind});
   };
-  const auto addOutput = [&](const char *label = "out", int channels = 0) {
+  const auto addOutput = [&](const char *label = "out", int channels = 0,
+                             SignalKind kind = SignalKind::audio) {
     node.outputs.push_back(
-        {nextPinId++, label, PinKind::output, {channels, "audio"}});
+        {nextPinId++, label, PinKind::output, {channels, "audio"}, kind});
   };
   const auto property = [](std::string key, std::string label, int value,
                            int minimum, int maximum,
@@ -1219,6 +1378,16 @@ GraphNode NodeGraph::makeNode(NodeType type, juce::Point<float> position) {
     return NodeProperty{std::move(key),    std::move(label), value,
                         minimum,           maximum,          kind,
                         std::move(choices)};
+  };
+  const auto gainProperty = []() {
+    NodeProperty gain;
+    gain.key = "gain";
+    gain.label = "Gain";
+    gain.kind = PropertyKind::real;
+    gain.floatValue = gainDefault;
+    gain.floatMinimum = gainMinimum;
+    gain.floatMaximum = gainMaximum;
+    return gain;
   };
 
   switch (type) {
@@ -1258,6 +1427,7 @@ GraphNode NodeGraph::makeNode(NodeType type, juce::Point<float> position) {
     node.properties.push_back(
         property("activation", "Function", 0, 0, 3, PropertyKind::choice,
                  {"ReLU", "Sigmoid", "Tanh", "LeakyReLU"}));
+    node.properties.push_back(gainProperty());
     break;
   case NodeType::tcn:
     node.label = "TCN";
@@ -1272,6 +1442,7 @@ GraphNode NodeGraph::makeNode(NodeType type, juce::Point<float> position) {
     node.properties.push_back(
         property("activation", "Activation", 0, 0, 3, PropertyKind::choice,
                  {"ReLU", "Sigmoid", "Tanh", "LeakyReLU"}));
+    node.properties.push_back(gainProperty());
     break;
   case NodeType::merge:
     node.label = "Merge";
@@ -1282,6 +1453,17 @@ GraphNode NodeGraph::makeNode(NodeType type, juce::Point<float> position) {
                  {"Add", "Multiply", "Concatenate"}));
     node.properties.push_back(property("inputs", "Inputs", 2, 2, 8));
     setMixerInputCount(node, 2);
+    break;
+  case NodeType::knobInput:
+    node.label = "Knob Input";
+    node.detail = "1D conditioning";
+    addOutput("c", 1, SignalKind::conditioning);
+    break;
+  case NodeType::xyTrackpad:
+    node.label = "XY Trackpad";
+    node.detail = "2D conditioning";
+    addOutput("x", 1, SignalKind::conditioning);
+    addOutput("y", 1, SignalKind::conditioning);
     break;
   case NodeType::blackBox:
     node.label = "Frozen Selection";
@@ -1387,6 +1569,7 @@ std::vector<std::vector<std::int32_t>> NodeGraph::partitionFreezeChains(
   for (const auto id : selectedNodeIds) {
     const auto *node = findNode(id);
     if (node == nullptr || isFixedIoType(node->type) ||
+        isConditioningSourceType(node->type) ||
         node->state != NodeState::liveBlue)
       return {};
     selected.insert(id);

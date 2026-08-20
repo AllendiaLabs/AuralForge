@@ -96,6 +96,41 @@ public:
   bool setProperty(std::int32_t nodeId, const std::string &key, int value);
 
   /**
+   * @brief Updates one validated real inline property such as Gain.
+   * @param nodeId Target node identifier.
+   * @param key Canonical property key.
+   * @param value Proposed real value.
+   * @return True when the property exists and was updated.
+   */
+  bool setFloatProperty(std::int32_t nodeId, const std::string &key,
+                        float value);
+
+  /**
+   * @brief Stores a Knob Input conditioning scalar.
+   * @param nodeId Target Knob Input node.
+   * @param value Proposed conditioning value.
+   * @return True when the node is a Knob Input.
+   */
+  bool setConditioningValue(std::int32_t nodeId, float value);
+
+  /**
+   * @brief Stores XY Trackpad conditioning scalars.
+   * @param nodeId Target XY Trackpad node.
+   * @param x Proposed X conditioning value.
+   * @param y Proposed Y conditioning value.
+   * @return True when the node is an XY Trackpad.
+   */
+  bool setConditioningPad(std::int32_t nodeId, float x, float y);
+
+  /**
+   * @brief Stores the persisted analysis view preference for one node.
+   * @param nodeId Target node identifier.
+   * @param view Selected analysis view.
+   * @return True when the node exists.
+   */
+  bool setSelectedAnalysisView(std::int32_t nodeId, AnalysisView view);
+
+  /**
    * @brief Stores a deterministic signed seed on a weighted live node.
    * @param nodeId Target node identifier.
    * @param seed Seed clamped to `[minimumSeed, maximumSeed]`.

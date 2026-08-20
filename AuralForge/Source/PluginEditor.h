@@ -5,6 +5,7 @@
 #include "graph/NodeGraph.h"
 #include "graph/NodeRenderer.h"
 #include "ui/ImGuiHost.h"
+#include "ui/InfoPanel.h"
 #include <JuceHeader.h>
 
 /**
@@ -32,6 +33,22 @@ private:
    */
   void persistGraph(bool compileRuntime = true);
   /**
+   * @brief Publishes Knob/XY/Gain values without rebuilding the audio graph.
+   */
+  void publishRuntimeControls();
+  /**
+   * @brief Bumps analysis revision and refreshes the selected snapshot.
+   */
+  void invalidateAnalysis();
+  /**
+   * @brief Marks the current analysis snapshot as current for the graph revision.
+   */
+  void syncAnalysisRevision();
+  /**
+   * @brief Requests or refreshes analysis for the current target node.
+   */
+  void refreshAnalysisIfNeeded();
+  /**
    * @brief Applies an inline node property to the live processor.
    * @param nodeId Stable graph node identifier.
    * @param key Canonical property key.
@@ -39,6 +56,32 @@ private:
    */
   void handlePropertyChanged(std::int32_t nodeId, const std::string &key,
                              int value);
+  /**
+   * @brief Applies a real inline property such as Gain.
+   * @param nodeId Stable graph node identifier.
+   * @param key Canonical property key.
+   * @param value Validated real value.
+   */
+  void handleFloatPropertyChanged(std::int32_t nodeId, const std::string &key,
+                                  float value);
+  /**
+   * @brief Opens analysis on a Blue or Gold node.
+   * @param nodeId Stable graph node identifier.
+   */
+  void handleAnalysisRequested(std::int32_t nodeId);
+  /**
+   * @brief Publishes Knob Input conditioning without a graph recompile.
+   * @param nodeId Knob Input node identifier.
+   * @param value Current conditioning scalar.
+   */
+  void handleKnobChanged(std::int32_t nodeId, float value);
+  /**
+   * @brief Publishes XY Trackpad conditioning without a graph recompile.
+   * @param nodeId XY Trackpad node identifier.
+   * @param x Current X conditioning scalar.
+   * @param y Current Y conditioning scalar.
+   */
+  void handleXyChanged(std::int32_t nodeId, float x, float y);
   /**
    * @brief Requests element-scoped deterministic randomization.
    * @param nodeId Stable graph node identifier.
@@ -87,6 +130,16 @@ private:
   std::vector<std::vector<std::int32_t>> pendingFreezeChains;
   /** @brief Exact graph snapshot used to reject stale worker completions. */
   std::string pendingFreezeGraph;
+  /** @brief Side panel showing architecture metrics and analysis plots. */
+  auralforge::ui::InfoPanel infoPanel;
+  /** @brief Node currently shown in the analysis panel, or zero. */
+  std::int32_t analysisNodeId = 0;
+  /** @brief Latest computed analysis snapshot. */
+  auralforge::dsp::AnalysisSnapshot analysisSnapshot;
+  /** @brief Graph revision consumed by the latest snapshot. */
+  std::uint64_t analysisRevision = 0;
+  /** @brief Dear ImGui time of the last analysis computation. */
+  double lastAnalysisTime = 0.0;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AuralForgeAudioProcessorEditor)
 };

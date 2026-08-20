@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <sstream>
 
 namespace {
@@ -142,6 +143,7 @@ void AuralForgeAudioProcessor::prepareToPlay(double sampleRate,
 
 void AuralForgeAudioProcessor::releaseResources() {
   prepared.store(false, std::memory_order_release);
+  transportPlaying.store(false, std::memory_order_release);
   std::atomic_store_explicit(&publishedRuntime, std::shared_ptr<RuntimeState>{},
                              std::memory_order_release);
   if (auto graphRuntime = graphPublisher.getPublishedRuntime())
@@ -181,6 +183,7 @@ bool AuralForgeAudioProcessor::isBusesLayoutSupported(
 void AuralForgeAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                             juce::MidiBuffer &midiMessages) {
   juce::ScopedNoDenormals noDenormals;
+  transportPlaying.store(true, std::memory_order_release);
   const auto inputChannels = getTotalNumInputChannels();
   const auto outputChannels = getTotalNumOutputChannels();
   const auto numSamples = buffer.getNumSamples();
@@ -438,8 +441,61 @@ void AuralForgeAudioProcessor::setGraphState(const juce::ValueTree &graphState,
     const juce::ScopedLock lock(graphStateLock);
     persistedGraphState = graphState.createCopy();
   }
+  graphRevision.fetch_add(1, std::memory_order_acq_rel);
   if (compileRuntime)
     requestGraphCompile();
+}
+
+void AuralForgeAudioProcessor::setRuntimeControls(
+    const auralforge::dsp::RuntimeControlState &controls) {
+  auto published =
+      std::make_shared<const auralforge::dsp::RuntimeControlState>(controls);
+  std::atomic_store_explicit(&publishedControls, std::move(published),
+                             std::memory_order_release);
+  graphRevision.fetch_add(1, std::memory_order_acq_rel);
+}
+
+std::uint64_t AuralForgeAudioProcessor::getGraphRevision() const noexcept {
+  return graphRevision.load(std::memory_order_acquire);
+}
+
+bool AuralForgeAudioProcessor::isTransportPlaying() const noexcept {
+  if (auto *head = getPlayHead()) {
+    if (const auto position = head->getPosition())
+      return position->getIsPlaying();
+  }
+  return transportPlaying.load(std::memory_order_acquire);
+}
+
+void AuralForgeAudioProcessor::copyLiveCapture(
+    float &inputPeak, float &outputPeak, bool &suitable, float *const *input,
+    int maxSamples, int &channels, int &samples) const noexcept {
+  const auto index = liveCaptureIndex.load(std::memory_order_acquire);
+  const auto &slot =
+      liveCaptureSlots[static_cast<std::size_t>(index & 1)];
+  inputPeak = slot.inputPeak;
+  outputPeak = slot.outputPeak;
+  suitable = slot.suitable;
+  channels = slot.channels;
+  samples = std::min(slot.samples, std::max(0, maxSamples));
+  if (input == nullptr)
+    return;
+  for (int channel = 0; channel < channels; ++channel) {
+    if (input[channel] == nullptr)
+      continue;
+    std::memcpy(input[channel], slot.input[static_cast<std::size_t>(channel)].data(),
+                static_cast<std::size_t>(samples) * sizeof(float));
+  }
+}
+
+bool AuralForgeAudioProcessor::getAnalysisTapPeaks(std::int32_t nodeId,
+                                                   float &inputPeak,
+                                                   float &outputPeak) const
+    noexcept {
+  auto runtime = graphPublisher.getPublishedRuntime();
+  if (runtime == nullptr)
+    return false;
+  return runtime->getTapPeaks(nodeId, inputPeak, outputPeak);
 }
 
 bool AuralForgeAudioProcessor::prepareFrozenArtifact(
@@ -603,6 +659,22 @@ bool AuralForgeAudioProcessor::processLiveGraph(
       numSamples > graphWetBuffer.getNumSamples())
     return false;
 
+  if (auto controls = std::atomic_load_explicit(&publishedControls,
+                                                std::memory_order_acquire))
+    activeGraphRuntime->bindControls(controls);
+
+  LiveCaptureSlot capture;
+  capture.channels = std::min(2, inputChannels);
+  capture.samples = std::min(512, numSamples);
+  for (int channel = 0; channel < capture.channels; ++channel) {
+    const auto *source = buffer.getReadPointer(channel);
+    std::memcpy(capture.input[static_cast<std::size_t>(channel)].data(),
+                source, static_cast<std::size_t>(capture.samples) * sizeof(float));
+    capture.inputPeak =
+        std::max(capture.inputPeak,
+                 buffer.getMagnitude(channel, 0, numSamples));
+  }
+
   const auto outputChannels = getTotalNumOutputChannels();
   if (!activeGraphRuntime->processHost(buffer.getArrayOfReadPointers(),
                                        static_cast<std::size_t>(inputChannels),
@@ -649,6 +721,12 @@ bool AuralForgeAudioProcessor::processLiveGraph(
 
   applyDcBlocker(graphDcInput, graphDcOutput, buffer, outputChannels,
                  numSamples);
+  capture.outputPeak = buffer.getMagnitude(0, 0, numSamples);
+  capture.suitable = capture.inputPeak > 1.0e-5f;
+  const auto writeIndex =
+      1 - (liveCaptureIndex.load(std::memory_order_relaxed) & 1);
+  liveCaptureSlots[static_cast<std::size_t>(writeIndex)] = capture;
+  liveCaptureIndex.store(writeIndex, std::memory_order_release);
   return true;
 }
 
@@ -699,6 +777,12 @@ void AuralForgeAudioProcessor::requestGraphCompile() {
       graphState, options, [this](const auralforge::graph::GraphNode &node) {
         return resolveFrozenBlackBox(node);
       });
+}
+
+std::shared_ptr<const auralforge::dsp::FrozenBlackBoxFactory>
+AuralForgeAudioProcessor::resolveFrozenBlackBoxForAnalysis(
+    const auralforge::graph::GraphNode &node) const {
+  return resolveFrozenBlackBox(node);
 }
 
 std::shared_ptr<const auralforge::dsp::FrozenBlackBoxFactory>

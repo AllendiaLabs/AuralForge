@@ -130,6 +130,43 @@ public:
                      bool compileRuntime = true);
 
   /**
+   * @brief Publishes Gain and Knob/XY values without recompiling the graph.
+   * @param controls Immutable control table consumed on the audio thread.
+   */
+  void setRuntimeControls(
+      const auralforge::dsp::RuntimeControlState &controls);
+
+  /** @brief Returns the monotonic graph/control revision used by analysis. */
+  [[nodiscard]] std::uint64_t getGraphRevision() const noexcept;
+
+  /** @brief Returns true when the host transport is currently playing. */
+  [[nodiscard]] bool isTransportPlaying() const noexcept;
+
+  /**
+   * @brief Copies the latest lock-free live-capture slot for analysis.
+   * @param inputPeak Receives the host-input peak.
+   * @param outputPeak Receives the host-output peak.
+   * @param suitable Receives whether live audio can drive analysis.
+   * @param input Destination for planar captured input, or null to skip copy.
+   * @param maxSamples Capacity of each `input` channel.
+   * @param channels Receives captured channel count.
+   * @param samples Receives captured sample count.
+   */
+  void copyLiveCapture(float &inputPeak, float &outputPeak, bool &suitable,
+                       float *const *input, int maxSamples, int &channels,
+                       int &samples) const noexcept;
+
+  /**
+   * @brief Reads the latest audio-thread tap peaks for one compiled node.
+   * @param nodeId Stable graph node identifier.
+   * @param inputPeak Receives the upstream peak.
+   * @param outputPeak Receives the node-output peak.
+   * @return True when a published runtime contains the node.
+   */
+  [[nodiscard]] bool getAnalysisTapPeaks(std::int32_t nodeId, float &inputPeak,
+                                         float &outputPeak) const noexcept;
+
+  /**
    * @brief Loads, warms, and publishes a validated frozen artifact handle.
    * @param result Worker result containing artifact path and channel metadata.
    * @param error Receives a human-readable load or validation error.
@@ -156,6 +193,15 @@ public:
    */
   [[nodiscard]] bool
   hasPreparedFrozenArtifact(const std::string &artifactPath) const noexcept;
+
+  /**
+   * @brief Resolves a frozen graph node for off-thread analysis.
+   * @param node Frozen BlackBox graph node.
+   * @return Matching immutable factory, or null when unavailable.
+   */
+  [[nodiscard]] std::shared_ptr<const auralforge::dsp::FrozenBlackBoxFactory>
+  resolveFrozenBlackBoxForAnalysis(
+      const auralforge::graph::GraphNode &node) const;
 
 private:
   /** @brief Immutable artifact map atomically replaced by background work. */
@@ -274,6 +320,32 @@ private:
   mutable juce::CriticalSection graphStateLock;
   /** @brief Latest immutable graph document copy used for project recall. */
   juce::ValueTree persistedGraphState{"GraphDocument"};
+  /** @brief Monotonic revision bumped on graph or conditioning publication. */
+  std::atomic<std::uint64_t> graphRevision{1};
+  /** @brief Latest Gain/conditioning table published for the audio thread. */
+  mutable std::shared_ptr<const auralforge::dsp::RuntimeControlState>
+      publishedControls;
+  /** @brief Double-buffered live input capture used by analysis. */
+  struct LiveCaptureSlot {
+    /** @brief Host-input peak of the captured block. */
+    float inputPeak = 0.0f;
+    /** @brief Host-output peak of the captured block. */
+    float outputPeak = 0.0f;
+    /** @brief True when the captured block is loud enough for live analysis. */
+    bool suitable = false;
+    /** @brief Captured channel count. */
+    int channels = 0;
+    /** @brief Captured sample count. */
+    int samples = 0;
+    /** @brief Planar captured input, stereo maximum of 512 samples. */
+    std::array<std::array<float, 512>, 2> input{};
+  };
+  /** @brief Two capture slots swapped with `liveCaptureIndex`. */
+  std::array<LiveCaptureSlot, 2> liveCaptureSlots{};
+  /** @brief Index of the slot that message-thread readers should consume. */
+  std::atomic<int> liveCaptureIndex{0};
+  /** @brief True when the host play-head reports playback. */
+  std::atomic<bool> transportPlaying{false};
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AuralForgeAudioProcessor)
 };

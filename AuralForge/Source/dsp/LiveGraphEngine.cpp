@@ -56,6 +56,22 @@ struct CompiledElement {
   bool randomizable = false;
   /** @brief Merge operating mode: add, multiply, or concatenate. */
   int mergeMode = 0;
+  /** @brief Nonlinearity slope Gain for Activation and TCN elements. */
+  float gain = 1.0f;
+  /** @brief Compiled Knob Input scalar, overridden by live controls. */
+  float conditioningValue = 0.0f;
+  /** @brief Compiled XY Trackpad X scalar. */
+  float conditioningX = 0.0f;
+  /** @brief Compiled XY Trackpad Y scalar. */
+  float conditioningY = 0.0f;
+  /** @brief True when this element's output is scalar conditioning. */
+  bool outputIsConditioning = false;
+  /**
+   * @brief Per-input extraction: -1 keeps the full tensor, otherwise one channel.
+   */
+  std::vector<int> inputExtractChannels;
+  /** @brief True when the corresponding compiled input is conditioning. */
+  std::vector<char> inputIsConditioning;
 };
 
 /** @brief Pin ownership and direction used during graph validation. */
@@ -118,6 +134,28 @@ bool readProperty(const auralforge::graph::GraphNode &node, const char *key,
   return true;
 }
 
+/**
+ * @brief Finds a real node property by canonical key.
+ * @param node Graph node to inspect.
+ * @param key Property key.
+ * @param value Receives the stored real value.
+ * @return True when the property exists.
+ */
+bool readFloatProperty(const auralforge::graph::GraphNode &node, const char *key,
+                       float &value) noexcept {
+  const auto found =
+      std::find_if(node.properties.begin(), node.properties.end(),
+                   [key](const auralforge::graph::NodeProperty &property) {
+                     return property.key == key;
+                   });
+  if (found == node.properties.end())
+    return false;
+  value = found->kind == auralforge::graph::PropertyKind::real
+              ? found->floatValue
+              : static_cast<float>(found->value);
+  return true;
+}
+
 /** @brief Creates one deterministic bias-free convolution weight tensor. */
 torch::Tensor makeWeight(int outputChannels, int inputChannels, int kernelSize,
                          std::uint64_t &state) {
@@ -168,7 +206,10 @@ void randomizeElementWeights(CompiledElement &element, std::int32_t seed) {
 
 /** @brief Applies a configured zero-preserving activation. */
 torch::Tensor applyActivation(torch::Tensor value,
-                              auralforge::dsp::ActivationType activation) {
+                              auralforge::dsp::ActivationType activation,
+                              float gain) {
+  if (std::abs(gain - 1.0f) > 1.0e-6f)
+    value = value * gain;
   switch (activation) {
   case auralforge::dsp::ActivationType::relu:
     return torch::relu(value);
@@ -218,6 +259,10 @@ bool hasValidPortLayout(const auralforge::graph::GraphNode &node) noexcept {
     return node.inputs.empty() && node.outputs.size() == 1;
   if (node.type == NodeType::audioOutput)
     return node.inputs.size() == 1 && node.outputs.empty();
+  if (node.type == NodeType::knobInput)
+    return node.inputs.empty() && node.outputs.size() == 1;
+  if (node.type == NodeType::xyTrackpad)
+    return node.inputs.empty() && node.outputs.size() == 2;
   if (auralforge::graph::isMixerType(node.type))
     return node.inputs.size() >= 2 && node.outputs.size() == 1;
   return node.inputs.size() == 1 && node.outputs.size() == 1;
@@ -247,6 +292,71 @@ std::vector<std::int64_t> collectCompiledInputs(
     indices.push_back(static_cast<std::int64_t>(compiledSource->second));
   }
   return indices;
+}
+
+/**
+ * @brief Returns the output-pin index of a source node, or -1.
+ * @param node Source graph node.
+ * @param pinId Source pin identifier.
+ * @return Zero-based output index, or -1 when not found.
+ */
+int outputPinIndex(const auralforge::graph::GraphNode &node,
+                   std::int32_t pinId) noexcept {
+  for (int index = 0; index < static_cast<int>(node.outputs.size()); ++index) {
+    if (node.outputs[static_cast<std::size_t>(index)].id == pinId)
+      return index;
+  }
+  return -1;
+}
+
+/**
+ * @brief Broadcasts a tensor to a target channel count when it is 1-wide.
+ * @param value Source tensor shaped [1, C, T].
+ * @param channels Desired channel count.
+ * @return Broadcast or original tensor.
+ */
+torch::Tensor broadcastChannels(const torch::Tensor &value, int channels) {
+  if (!value.defined() || value.size(1) == channels)
+    return value;
+  if (value.size(1) == 1 && channels > 1)
+    return value.expand({value.size(0), channels, value.size(2)}).contiguous();
+  return value;
+}
+
+/**
+ * @brief Returns whether two channel counts can share an add/multiply Merge.
+ * @param left First connected width, or zero when unknown.
+ * @param right Second connected width, or zero when unknown.
+ * @return True when the widths match or either side can broadcast from 1.
+ */
+bool channelsAreBroadcastCompatible(int left, int right) noexcept {
+  return left == 0 || right == 0 || left == right || left == 1 || right == 1;
+}
+
+/**
+ * @brief Channel count contributed by one compiled Merge input.
+ * @param source Upstream compiled element.
+ * @param extractChannel Extracted source channel, or -1 for the full tensor.
+ * @return Positive channel count used at the Merge input.
+ */
+int compiledSlotChannels(const CompiledElement &source,
+                         int extractChannel) noexcept {
+  if (extractChannel >= 0)
+    return 1;
+  return source.outputChannels;
+}
+
+/**
+ * @brief Extracts one channel or returns the full tensor.
+ * @param value Source tensor.
+ * @param extractChannel Channel to keep, or -1 for the full tensor.
+ * @return Tensor shaped [1, 1, T] when extracting, otherwise @p value.
+ */
+torch::Tensor extractCompiledInput(const torch::Tensor &value,
+                                   int extractChannel) {
+  if (extractChannel < 0 || extractChannel >= value.size(1))
+    return value;
+  return value.narrow(1, extractChannel, 1).contiguous();
 }
 
 /** @brief Creates a compile failure value. */
@@ -306,6 +416,12 @@ struct LiveGraphRuntime::Impl {
   /** @brief Lock-free latest per-element inference durations in milliseconds.
    */
   std::unique_ptr<std::atomic<double>[]> inferenceMilliseconds;
+  /** @brief Latest upstream peak per compiled element. */
+  std::unique_ptr<std::atomic<float>[]> inputPeaks;
+  /** @brief Latest output peak per compiled element. */
+  std::unique_ptr<std::atomic<float>[]> outputPeaks;
+  /** @brief Published Gain/conditioning table, or null for compiled defaults. */
+  std::shared_ptr<const RuntimeControlState> controls;
 };
 
 /** @brief Constructs a snapshot from validated immutable storage. */
@@ -392,7 +508,215 @@ LiveGraphRuntime::getSnapshot() const noexcept {
   return implementation->snapshot;
 }
 
-/** @brief Executes the complete topological graph for one tensor block. */
+namespace {
+float resolveGain(const CompiledElement &element,
+                  const auralforge::dsp::RuntimeControlState *controls) {
+  if (controls != nullptr) {
+    const auto found = controls->gainByNodeId.find(element.nodeId);
+    if (found != controls->gainByNodeId.end())
+      return found->second;
+  }
+  return element.gain;
+}
+
+std::array<float, 2>
+resolveConditioning(const CompiledElement &element,
+                    const auralforge::dsp::RuntimeControlState *controls) {
+  if (controls != nullptr) {
+    const auto found = controls->conditioningByNodeId.find(element.nodeId);
+    if (found != controls->conditioningByNodeId.end())
+      return found->second;
+  }
+  return {element.type == auralforge::graph::NodeType::knobInput
+              ? element.conditioningValue
+              : element.conditioningX,
+          element.conditioningY};
+}
+
+float tensorPeak(const torch::Tensor &value) noexcept {
+  if (!value.defined() || value.numel() == 0)
+    return 0.0f;
+  const auto contiguous = value.is_contiguous() ? value : value.contiguous();
+  const auto *data = contiguous.data_ptr<float>();
+  const auto count = contiguous.numel();
+  float peak = 0.0f;
+  for (std::int64_t index = 0; index < count; ++index)
+    peak = std::max(peak, std::abs(data[index]));
+  return peak;
+}
+
+torch::Tensor gatherUpstream(const std::vector<torch::Tensor> &outputs,
+                             const CompiledElement &element) {
+  if (element.inputIndices.empty())
+    return {};
+  auto value = outputs[static_cast<std::size_t>(element.inputIndex)];
+  const auto extract =
+      element.inputExtractChannels.empty() ? -1 : element.inputExtractChannels.front();
+  return extractCompiledInput(value, extract);
+}
+
+std::vector<torch::Tensor>
+gatherAllInputs(const std::vector<torch::Tensor> &outputs,
+                const CompiledElement &element) {
+  std::vector<torch::Tensor> inputs;
+  inputs.reserve(element.inputIndices.size());
+  for (std::size_t index = 0; index < element.inputIndices.size(); ++index) {
+    auto value = outputs[static_cast<std::size_t>(element.inputIndices[index])];
+    const auto extract = index < element.inputExtractChannels.size()
+                             ? element.inputExtractChannels[index]
+                             : -1;
+    inputs.push_back(extractCompiledInput(value, extract));
+  }
+  return inputs;
+}
+
+torch::Tensor executeMerge(const CompiledElement &element,
+                           const std::vector<torch::Tensor> &inputs,
+                           std::int64_t samples, torch::TensorOptions options) {
+  if (inputs.empty()) {
+    const auto fill = element.mergeMode == 1 ? 1.0f : 0.0f;
+    return torch::full({1, 1, samples}, fill, options);
+  }
+
+  if (element.mergeMode == 2)
+    return torch::cat(inputs, 1);
+
+  int width = 1;
+  for (const auto &value : inputs) {
+    if (value.defined())
+      width = std::max(width, static_cast<int>(value.size(1)));
+  }
+
+  auto output = element.mergeMode == 1
+                    ? torch::ones({1, width, samples}, options)
+                    : torch::zeros({1, width, samples}, options);
+  for (const auto &value : inputs) {
+    const auto aligned = broadcastChannels(value, width);
+    output = element.mergeMode == 1 ? output * aligned : output + aligned;
+  }
+  return output;
+}
+
+} // namespace
+
+void LiveGraphRuntime::executeElement(std::size_t index,
+                                      const torch::Tensor &blockInput) {
+  auto &runtime = *implementation;
+  const auto &element =
+      runtime.snapshot->implementation->elements[index];
+  auto &output = runtime.outputs[index];
+  const auto *controls = runtime.controls.get();
+  const auto samples = blockInput.size(2);
+
+  if (element.type == auralforge::graph::NodeType::audioInput) {
+    output = blockInput;
+    return;
+  }
+  if (element.type == auralforge::graph::NodeType::knobInput) {
+    const auto values = resolveConditioning(element, controls);
+    output = torch::full({1, 1, samples}, values[0], blockInput.options());
+    return;
+  }
+  if (element.type == auralforge::graph::NodeType::xyTrackpad) {
+    const auto values = resolveConditioning(element, controls);
+    output = torch::empty({1, 2, samples}, blockInput.options());
+    output[0][0].fill_(values[0]);
+    output[0][1].fill_(values[1]);
+    return;
+  }
+  if (element.inputIndices.empty()) {
+    output = torch::zeros(
+        {1, runtime.snapshot->implementation->outputChannels, samples},
+        blockInput.options());
+    return;
+  }
+
+  const auto upstream = gatherUpstream(runtime.outputs, element);
+  if (runtime.inputPeaks)
+    runtime.inputPeaks[index].store(tensorPeak(upstream),
+                                    std::memory_order_relaxed);
+
+  switch (element.type) {
+  case auralforge::graph::NodeType::audioOutput:
+    output = upstream;
+    break;
+  case auralforge::graph::NodeType::linear:
+    output = project(upstream, element.weights.front());
+    break;
+  case auralforge::graph::NodeType::convolution: {
+    const auto historyLength =
+        static_cast<std::int64_t>(element.receptiveField - 1);
+    auto extended =
+        extendCausalInput(upstream, runtime.histories[index], historyLength);
+    output = convolve(extended, element.weights.front(), element.dilation);
+    break;
+  }
+  case auralforge::graph::NodeType::activation:
+    output = applyActivation(upstream, element.activation,
+                             resolveGain(element, controls));
+    break;
+  case auralforge::graph::NodeType::tcn: {
+    const auto historyLength =
+        static_cast<std::int64_t>(element.receptiveField - 1);
+    auto value =
+        extendCausalInput(upstream, runtime.histories[index], historyLength);
+    value = project(value, element.weights.front());
+    const auto gain = resolveGain(element, controls);
+    for (int layer = 0; layer < element.depth; ++layer) {
+      const auto layerDilation =
+          static_cast<std::int64_t>(element.dilation) << layer;
+      const auto leftPadding =
+          static_cast<std::int64_t>(element.kernelSize - 1) * layerDilation;
+      value = torch::nn::functional::pad(
+          value, torch::nn::functional::PadFuncOptions({leftPadding, 0})
+                     .mode(torch::kConstant)
+                     .value(0.0));
+      value = convolve(value,
+                       element.weights[static_cast<std::size_t>(layer) + 1],
+                       layerDilation);
+      value = applyActivation(std::move(value), element.activation, gain);
+    }
+    value = project(value, element.weights.back());
+    output = value.narrow(2, value.size(2) - samples, samples);
+    break;
+  }
+  case auralforge::graph::NodeType::merge:
+    output = executeMerge(element, gatherAllInputs(runtime.outputs, element),
+                          samples,
+                          blockInput.options());
+    break;
+  case auralforge::graph::NodeType::blackBox: {
+    const auto started = std::chrono::steady_clock::now();
+    const auto historyLength =
+        static_cast<std::int64_t>(element.receptiveField - 1);
+    auto extended =
+        extendCausalInput(upstream, runtime.histories[index], historyLength);
+    output = runtime.blackBoxKernels[index]->forward(extended);
+    if (!output.defined() || output.device().type() != torch::kCPU ||
+        output.scalar_type() != torch::kFloat32 || output.dim() != 3 ||
+        output.size(0) != 1 || output.size(1) != element.outputChannels ||
+        output.size(2) != extended.size(2))
+      throw std::runtime_error(
+          "Frozen BlackBox returned an invalid tensor shape or type");
+    output = output.narrow(2, output.size(2) - upstream.size(2),
+                           upstream.size(2));
+    const auto elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started);
+    runtime.inferenceMilliseconds[index].store(elapsed.count(),
+                                               std::memory_order_relaxed);
+    break;
+  }
+  case auralforge::graph::NodeType::audioInput:
+  case auralforge::graph::NodeType::knobInput:
+  case auralforge::graph::NodeType::xyTrackpad:
+    break;
+  }
+
+  if (runtime.outputPeaks)
+    runtime.outputPeaks[index].store(tensorPeak(output),
+                                     std::memory_order_relaxed);
+}
+
 torch::Tensor LiveGraphRuntime::processTensor(const torch::Tensor &input) {
   const auto &snapshot = *implementation->snapshot->implementation;
   if (!input.defined() || input.device().type() != torch::kCPU ||
@@ -403,121 +727,64 @@ torch::Tensor LiveGraphRuntime::processTensor(const torch::Tensor &input) {
         "Live graph input must be CPU float [1, channels, valid samples]");
 
   torch::InferenceMode inferenceGuard;
-  for (std::size_t index = 0; index < snapshot.elements.size(); ++index) {
-    const auto &element = snapshot.elements[index];
-    auto &output = implementation->outputs[index];
+  for (std::size_t index = 0; index < snapshot.elements.size(); ++index)
+    executeElement(index, input);
+  return implementation->outputs.back();
+}
 
-    if (element.type == graph::NodeType::audioInput) {
-      output = input;
-      continue;
-    }
-    if (element.inputIndices.empty()) {
-      output = torch::zeros({1, snapshot.outputChannels, input.size(2)},
-                            input.options());
-      continue;
-    }
+void LiveGraphRuntime::bindControls(
+    std::shared_ptr<const RuntimeControlState> controls) noexcept {
+  implementation->controls = std::move(controls);
+}
 
-    const auto gatherInputs = [&] {
-      std::vector<torch::Tensor> inputs;
-      inputs.reserve(element.inputIndices.size());
-      for (const auto inputIndex : element.inputIndices)
-        inputs.push_back(
-            implementation->outputs[static_cast<std::size_t>(inputIndex)]);
-      return inputs;
-    };
+torch::Tensor
+LiveGraphRuntime::processTensorTapped(const torch::Tensor &input,
+                                      std::int32_t nodeId) {
+  processTensor(input);
+  const auto &elements = implementation->snapshot->implementation->elements;
+  for (std::size_t index = 0; index < elements.size(); ++index) {
+    if (elements[index].nodeId == nodeId)
+      return implementation->outputs[index];
+  }
+  return {};
+}
 
-    const auto &upstream =
-        implementation->outputs[static_cast<std::size_t>(element.inputIndex)];
-    switch (element.type) {
-    case graph::NodeType::audioOutput:
-      output = upstream;
-      break;
-    case graph::NodeType::linear:
-      output = project(upstream, element.weights.front());
-      break;
-    case graph::NodeType::convolution: {
-      const auto historyLength =
-          static_cast<std::int64_t>(element.receptiveField - 1);
-      auto extended = extendCausalInput(
-          upstream, implementation->histories[index], historyLength);
-      output = convolve(extended, element.weights.front(), element.dilation);
-      break;
-    }
-    case graph::NodeType::activation:
-      output = applyActivation(upstream, element.activation);
-      break;
-    case graph::NodeType::tcn: {
-      const auto historyLength =
-          static_cast<std::int64_t>(element.receptiveField - 1);
-      auto value = extendCausalInput(upstream, implementation->histories[index],
-                                     historyLength);
-      value = project(value, element.weights.front());
-      for (int layer = 0; layer < element.depth; ++layer) {
-        const auto layerDilation = static_cast<std::int64_t>(element.dilation)
-                                   << layer;
-        const auto leftPadding =
-            static_cast<std::int64_t>(element.kernelSize - 1) * layerDilation;
-        value = torch::nn::functional::pad(
-            value, torch::nn::functional::PadFuncOptions({leftPadding, 0})
-                       .mode(torch::kConstant)
-                       .value(0.0));
-        value = convolve(value,
-                         element.weights[static_cast<std::size_t>(layer) + 1],
-                         layerDilation);
-        value = applyActivation(std::move(value), element.activation);
-      }
-      value = project(value, element.weights.back());
-      output = value.narrow(2, value.size(2) - input.size(2), input.size(2));
-      break;
-    }
-    case graph::NodeType::merge: {
-      auto inputs = gatherInputs();
-      switch (element.mergeMode) {
-      case 1: {
-        output = torch::ones_like(inputs.front());
-        for (const auto &value : inputs)
-          output = output * value;
-        break;
-      }
-      case 2:
-        output = torch::cat(inputs, 1);
-        break;
-      default: {
-        output = torch::zeros_like(inputs.front());
-        for (const auto &value : inputs)
-          output = output + value;
-        break;
-      }
-      }
-      break;
-    }
-    case graph::NodeType::blackBox: {
-      const auto started = std::chrono::steady_clock::now();
-      const auto historyLength =
-          static_cast<std::int64_t>(element.receptiveField - 1);
-      auto extended = extendCausalInput(
-          upstream, implementation->histories[index], historyLength);
-      output = implementation->blackBoxKernels[index]->forward(extended);
-      if (!output.defined() || output.device().type() != torch::kCPU ||
-          output.scalar_type() != torch::kFloat32 || output.dim() != 3 ||
-          output.size(0) != 1 || output.size(1) != element.outputChannels ||
-          output.size(2) != extended.size(2))
-        throw std::runtime_error(
-            "Frozen BlackBox returned an invalid tensor shape or type");
-      output =
-          output.narrow(2, output.size(2) - upstream.size(2), upstream.size(2));
-      const auto elapsed = std::chrono::duration<double, std::milli>(
-          std::chrono::steady_clock::now() - started);
-      implementation->inferenceMilliseconds[index].store(
-          elapsed.count(), std::memory_order_relaxed);
-      break;
-    }
-    case graph::NodeType::audioInput:
+torch::Tensor LiveGraphRuntime::processIsolated(std::int32_t nodeId,
+                                                const torch::Tensor &probe) {
+  const auto &elements = implementation->snapshot->implementation->elements;
+  std::size_t target = elements.size();
+  for (std::size_t index = 0; index < elements.size(); ++index) {
+    if (elements[index].nodeId == nodeId) {
+      target = index;
       break;
     }
   }
+  if (target >= elements.size() || !probe.defined())
+    return {};
 
-  return implementation->outputs.back();
+  seedIsolatedUpstreamOutputs(target, probe);
+  torch::InferenceMode inferenceGuard;
+  executeElement(target, probe);
+  return implementation->outputs[target];
+}
+
+bool LiveGraphRuntime::getTapPeaks(std::int32_t nodeId, float &inputPeak,
+                                   float &outputPeak) const noexcept {
+  const auto &elements = implementation->snapshot->implementation->elements;
+  for (std::size_t index = 0; index < elements.size(); ++index) {
+    if (elements[index].nodeId != nodeId)
+      continue;
+    inputPeak = implementation->inputPeaks
+                    ? implementation->inputPeaks[index].load(
+                          std::memory_order_relaxed)
+                    : 0.0f;
+    outputPeak = implementation->outputPeaks
+                     ? implementation->outputPeaks[index].load(
+                           std::memory_order_relaxed)
+                     : 0.0f;
+    return true;
+  }
+  return false;
 }
 
 /** @brief Executes planar host audio and converts failures to silence. */
@@ -666,6 +933,7 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
   std::unordered_map<std::int32_t, std::vector<std::int32_t>> incoming;
   std::unordered_map<std::int32_t, int> indegree;
   std::unordered_map<std::int32_t, std::int32_t> sourceNodeByDestinationPin;
+  std::unordered_map<std::int32_t, std::int32_t> sourcePinIdByDestinationPin;
   std::unordered_set<std::int32_t> linkIds;
   for (const auto &node : nodes)
     indegree[node.id] = 0;
@@ -687,6 +955,8 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
              .second)
       return failure(LiveGraphErrorCode::invalidGraph, destination->second.nodeId,
                      "An input port cannot have more than one connection");
+    sourcePinIdByDestinationPin.emplace(link.destinationPinId,
+                                        link.sourcePinId);
 
     outgoing[source->second.nodeId].push_back(destination->second.nodeId);
     incoming[destination->second.nodeId].push_back(source->second.nodeId);
@@ -745,10 +1015,10 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
   }
   std::unordered_set<std::int32_t> livePath;
   for (const auto &node : nodes) {
-    if (fromInput.count(node.id) != 0 && toOutput.count(node.id) != 0)
+    if (toOutput.count(node.id) != 0)
       livePath.insert(node.id);
   }
-  if (livePath.count(outputNodeId) == 0)
+  if (fromInput.count(outputNodeId) == 0 || livePath.count(outputNodeId) == 0)
     return failure(LiveGraphErrorCode::incompletePath, outputNodeId,
                    "Graph has no complete Audio Input-to-Output path");
 
@@ -839,14 +1109,42 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
               LiveGraphErrorCode::invalidGraph, node.id,
               "Frozen subgraph is missing a live input connection");
         if (element.inputIndices.empty()) {
-          if (node.type != NodeType::audioOutput)
+          if (node.type != NodeType::audioOutput &&
+              !graph::isConditioningSourceType(node.type))
             continue;
-          element.inputChannels = options.hostOutputChannels;
+          if (node.type == NodeType::audioOutput)
+            element.inputChannels = options.hostOutputChannels;
         } else {
           element.inputIndex = element.inputIndices.front();
           element.inputChannels =
               compiled->elements[static_cast<std::size_t>(element.inputIndex)]
                   .outputChannels;
+          const auto *inputNodeForPins = inputNode;
+          element.inputExtractChannels.assign(element.inputIndices.size(), -1);
+          element.inputIsConditioning.assign(element.inputIndices.size(), 0);
+          std::size_t compiledInput = 0;
+          for (const auto &pin : inputNodeForPins->inputs) {
+            const auto source = sourceNodeByDestinationPin.find(pin.id);
+            if (source == sourceNodeByDestinationPin.end())
+              continue;
+            const auto compiledSource = compiledIndex.find(source->second);
+            if (compiledSource == compiledIndex.end())
+              continue;
+            const auto *sourceNode = nodesById.at(source->second);
+            const auto sourcePin = sourcePinIdByDestinationPin.find(pin.id);
+            if (sourceNode->type == NodeType::xyTrackpad &&
+                sourcePin != sourcePinIdByDestinationPin.end())
+              element.inputExtractChannels[compiledInput] =
+                  outputPinIndex(*sourceNode, sourcePin->second);
+            const auto &compiledSourceElement =
+                compiled->elements[compiledSource->second];
+            element.inputIsConditioning[compiledInput] =
+                graph::isConditioningSourceType(sourceNode->type) ||
+                        compiledSourceElement.outputIsConditioning
+                    ? 1
+                    : 0;
+            ++compiledInput;
+          }
         }
       }
       if (compileFrozenSink)
@@ -913,6 +1211,9 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
                          "Activation function selection is invalid");
         element.outputChannels = element.inputChannels;
         element.activation = static_cast<ActivationType>(activation);
+        float gain = graph::gainDefault;
+        readFloatProperty(node, "gain", gain);
+        element.gain = graph::clampGain(gain);
         break;
       }
       case NodeType::tcn: {
@@ -938,6 +1239,9 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
                          "TCN configuration is outside supported bounds");
 
         element.activation = static_cast<ActivationType>(activation);
+        float gain = graph::gainDefault;
+        readFloatProperty(node, "gain", gain);
+        element.gain = graph::clampGain(gain);
         element.outputChannels = element.inputChannels;
         std::uint64_t receptiveField = 1;
         for (int layer = 0; layer < element.depth; ++layer) {
@@ -977,37 +1281,53 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
           return failure(LiveGraphErrorCode::invalidProperty, node.id,
                          "Merge mode must be Add, Multiply, or Concatenate");
         element.mergeMode = mode;
-        if (mode == static_cast<int>(MergeMode::concatenate)) {
-          int outputChannels = 0;
-          for (const auto inputIndex : element.inputIndices) {
-            const auto channels =
-                compiled->elements[static_cast<std::size_t>(inputIndex)]
-                    .outputChannels;
-            if (channels < 1)
-              return failure(LiveGraphErrorCode::invalidShape, node.id,
-                             "Merge concatenate inputs must have positive "
-                             "channel counts");
-            outputChannels += channels;
-          }
-          if (outputChannels < 1 || outputChannels > 512)
+        int width = 0;
+        int connectedCount = 0;
+        for (std::size_t index = 0; index < element.inputIndices.size();
+             ++index) {
+          const auto &source =
+              compiled->elements[static_cast<std::size_t>(
+                                     element.inputIndices[index])];
+          const auto extract =
+              index < element.inputExtractChannels.size()
+                  ? element.inputExtractChannels[index]
+                  : -1;
+          const auto channels = compiledSlotChannels(source, extract);
+          if (channels < 1)
             return failure(LiveGraphErrorCode::invalidShape, node.id,
-                           "Merge concatenate output channels must stay in "
-                           "1..512");
-          element.outputChannels = outputChannels;
-        } else {
-          for (const auto inputIndex : element.inputIndices) {
-            const auto channels =
-                compiled->elements[static_cast<std::size_t>(inputIndex)]
-                    .outputChannels;
-            if (channels != element.inputChannels)
-              return failure(LiveGraphErrorCode::invalidShape, node.id,
-                             "Merge requires every connected input to have the "
-                             "same channel count");
+                           "Merge inputs must have positive channel counts");
+          if (mode == static_cast<int>(MergeMode::concatenate)) {
+            width += channels;
+          } else if (connectedCount == 0) {
+            width = channels;
+          } else if (!channelsAreBroadcastCompatible(channels, width)) {
+            return failure(LiveGraphErrorCode::invalidShape, node.id,
+                           "Merge requires connected inputs to share a channel "
+                           "count, or broadcast from 1");
+          } else {
+            width = std::max(width, channels);
           }
-          element.outputChannels = element.inputChannels;
+          ++connectedCount;
         }
+        if (connectedCount == 0)
+          width = 1;
+        if (width < 1 || width > 512)
+          return failure(LiveGraphErrorCode::invalidShape, node.id,
+                         "Merge output channels must stay in 1..512");
+        element.outputChannels = width;
         break;
       }
+      case NodeType::knobInput:
+        element.outputChannels = 1;
+        element.outputIsConditioning = true;
+        element.conditioningValue = node.conditioningValue;
+        break;
+      case NodeType::xyTrackpad:
+        element.outputChannels = 2;
+        element.outputIsConditioning = true;
+        element.conditioningX = node.conditioningX;
+        element.conditioningY = node.conditioningY;
+        break;
       case NodeType::blackBox:
         if (!blackBoxResolver)
           return failure(LiveGraphErrorCode::invalidBlackBox, node.id,
@@ -1090,9 +1410,16 @@ LiveGraphEngine::prepare(std::shared_ptr<const LiveGraphSnapshot> snapshot,
     runtime->blackBoxKernels.resize(compiled.elements.size());
     runtime->inferenceMilliseconds =
         std::make_unique<std::atomic<double>[]>(compiled.elements.size());
-    for (std::size_t index = 0; index < compiled.elements.size(); ++index)
+    runtime->inputPeaks =
+        std::make_unique<std::atomic<float>[]>(compiled.elements.size());
+    runtime->outputPeaks =
+        std::make_unique<std::atomic<float>[]>(compiled.elements.size());
+    for (std::size_t index = 0; index < compiled.elements.size(); ++index) {
       runtime->inferenceMilliseconds[index].store(0.0,
                                                   std::memory_order_relaxed);
+      runtime->inputPeaks[index].store(0.0f, std::memory_order_relaxed);
+      runtime->outputPeaks[index].store(0.0f, std::memory_order_relaxed);
+    }
     runtime->hostInput = torch::empty(
         {1, compiled.inputChannels, compiled.maximumBlockSize},
         torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
@@ -1127,5 +1454,419 @@ LiveGraphEngine::prepare(std::shared_ptr<const LiveGraphSnapshot> snapshot,
     error.message = exception.what();
     return {};
   }
+}
+
+RuntimeControlState
+collectRuntimeControlState(const graph::NodeGraph &graphDocument) {
+  RuntimeControlState controls;
+  for (const auto &node : graphDocument.getNodes()) {
+    if (node.type == graph::NodeType::activation ||
+        node.type == graph::NodeType::tcn) {
+      float gain = graph::gainDefault;
+      for (const auto &property : node.properties) {
+        if (property.key == "gain") {
+          gain = property.kind == graph::PropertyKind::real
+                     ? property.floatValue
+                     : static_cast<float>(property.value);
+          break;
+        }
+      }
+      controls.gainByNodeId[node.id] = graph::clampGain(gain);
+    }
+    if (node.type == graph::NodeType::knobInput)
+      controls.conditioningByNodeId[node.id] = {
+          graph::clampConditioning(node.conditioningValue), 0.0f};
+    else if (node.type == graph::NodeType::xyTrackpad)
+      controls.conditioningByNodeId[node.id] = {
+          graph::clampConditioning(node.conditioningX),
+          graph::clampConditioning(node.conditioningY)};
+  }
+  return controls;
+}
+
+namespace {
+std::vector<AnalysisSeries> emptySeries(int channelCount) {
+  std::vector<AnalysisSeries> series;
+  series.reserve(static_cast<std::size_t>(std::max(channelCount, 0)));
+  for (int channel = 0; channel < channelCount; ++channel) {
+    AnalysisSeries trace;
+    trace.channelIndex = channel;
+    trace.channelLabel = analysisChannelLabel(channel, channelCount);
+    series.push_back(std::move(trace));
+  }
+  return series;
+}
+
+void appendTransferPoint(std::vector<AnalysisSeries> &series, int channels,
+                         float inputLevel, const torch::Tensor &output) {
+  if (!output.defined() || output.dim() != 3)
+    return;
+  const auto count = std::min(channels, static_cast<int>(output.size(1)));
+  for (int channel = 0; channel < count; ++channel) {
+    const auto plane = output[0][channel];
+    series[static_cast<std::size_t>(channel)].x.push_back(inputLevel);
+    series[static_cast<std::size_t>(channel)].y.push_back(tensorPeak(plane));
+  }
+}
+
+/**
+ * @brief Builds a multi-channel sine probe for oscilloscope fallback.
+ * @param channels Number of output channels.
+ * @param samples Number of samples per channel.
+ * @param sampleRate Host sample rate in Hz.
+ * @param frequency Probe tone frequency in Hz.
+ * @return Tensor shaped `[1, channels, samples]`.
+ */
+torch::Tensor makeSineProbe(int channels, int samples, double sampleRate,
+                            float frequency) {
+  auto probe = torch::zeros(
+      {1, std::max(channels, 1), samples},
+      torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+  const auto twoPi = static_cast<float>(2.0 * 3.14159265358979323846);
+  const auto phaseStep =
+      sampleRate > 0.0
+          ? twoPi * frequency / static_cast<float>(sampleRate)
+          : 0.0f;
+  for (int channel = 0; channel < channels; ++channel) {
+    const auto phaseOffset =
+        static_cast<float>(channel) * (twoPi / static_cast<float>(channels));
+    for (int sample = 0; sample < samples; ++sample) {
+      probe[0][channel][sample] =
+          0.85f * std::sin(phaseStep * static_cast<float>(sample) + phaseOffset);
+    }
+  }
+  return probe;
+}
+
+/**
+ * @brief Fills analysis traces with a time-domain waveform.
+ * @param series Destination traces, one per channel.
+ * @param output Processed audio tensor shaped `[1, channels, samples]`.
+ * @param sampleRate Host sample rate used to label the time axis in ms.
+ */
+void fillWaveform(std::vector<AnalysisSeries> &series,
+                  const torch::Tensor &output, double sampleRate) {
+  if (!output.defined() || output.dim() != 3)
+    return;
+  const auto samples = output.size(2);
+  if (samples < 2)
+    return;
+  const auto channels = std::min(static_cast<int>(output.size(1)),
+                                 static_cast<int>(series.size()));
+  const auto timeScale =
+      sampleRate > 0.0
+          ? static_cast<float>(1000.0 / sampleRate)
+          : 1.0f;
+  for (int channel = 0; channel < channels; ++channel) {
+    auto &trace = series[static_cast<std::size_t>(channel)];
+    trace.x.clear();
+    trace.y.clear();
+    trace.x.reserve(static_cast<std::size_t>(samples));
+    trace.y.reserve(static_cast<std::size_t>(samples));
+    const auto plane = output[0][channel];
+    for (std::int64_t sample = 0; sample < samples; ++sample) {
+      trace.x.push_back(static_cast<float>(sample) * timeScale);
+      trace.y.push_back(plane[sample].item<float>());
+    }
+  }
+}
+
+void fillSpectrum(std::vector<AnalysisSeries> &series, const torch::Tensor &input,
+                  const torch::Tensor &output, graph::AnalysisView view,
+                  double sampleRate) {
+  if (!input.defined() || !output.defined() || input.dim() != 3 ||
+      output.dim() != 3)
+    return;
+  const auto samples = std::min(input.size(2), output.size(2));
+  if (samples < 8)
+    return;
+  const auto channels =
+      std::min({static_cast<int>(input.size(1)), static_cast<int>(output.size(1)),
+                static_cast<int>(series.size())});
+  auto window = torch::hann_window(samples, torch::kFloat32);
+  window = window.view({1, 1, samples});
+  const auto inputSpec =
+      torch::fft::rfft(input.narrow(2, 0, samples) * window, samples, 2);
+  const auto outputSpec =
+      torch::fft::rfft(output.narrow(2, 0, samples) * window, samples, 2);
+  const auto bins = inputSpec.size(2);
+  const auto frequencyScale =
+      sampleRate > 0.0 ? static_cast<float>(sampleRate / static_cast<double>(samples))
+                       : 1.0f;
+  constexpr float epsilon = 1.0e-8f;
+  for (int channel = 0; channel < channels; ++channel) {
+    auto &trace = series[static_cast<std::size_t>(channel)];
+    trace.x.clear();
+    trace.y.clear();
+    trace.x.reserve(static_cast<std::size_t>(bins));
+    trace.y.reserve(static_cast<std::size_t>(bins));
+    for (std::int64_t bin = 1; bin < bins; ++bin) {
+      const auto xValue = inputSpec[0][channel][bin];
+      const auto yValue = outputSpec[0][channel][bin];
+      const auto transfer = yValue / (torch::abs(xValue) + epsilon);
+      trace.x.push_back(static_cast<float>(bin) * frequencyScale);
+      if (view == graph::AnalysisView::phase) {
+        trace.y.push_back(static_cast<float>(
+            torch::angle(transfer).item<float>() * (180.0f / 3.14159265f)));
+      } else {
+        const auto magnitude = torch::abs(transfer).item<float>();
+        trace.y.push_back(20.0f * std::log10(magnitude + epsilon));
+      }
+    }
+  }
+}
+
+std::optional<TransferMarker>
+markerOnChain(const std::vector<AnalysisSeries> &chain, float inputPeak,
+              int channelIndex) {
+  if (chain.empty())
+    return std::nullopt;
+  const auto index = std::clamp(channelIndex, 0,
+                                static_cast<int>(chain.size()) - 1);
+  const auto &trace = chain[static_cast<std::size_t>(index)];
+  if (trace.x.size() < 2 || trace.x.size() != trace.y.size())
+    return std::nullopt;
+  std::size_t best = 0;
+  auto bestDistance = std::abs(trace.x.front() - inputPeak);
+  for (std::size_t sample = 1; sample < trace.x.size(); ++sample) {
+    const auto distance = std::abs(trace.x[sample] - inputPeak);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = sample;
+    }
+  }
+  TransferMarker marker;
+  marker.channelIndex = index;
+  marker.inputLevel = trace.x[best];
+  marker.outputLevel = trace.y[best];
+  return marker;
+}
+
+/**
+ * @brief Returns true when isolated analysis should inject live host audio.
+ * @param elements Compiled elements in topological order.
+ * @param nodeId Stable graph node being analysed.
+ * @return False when every connected input is conditioning-only.
+ */
+bool elementUsesAudioProbe(const std::vector<CompiledElement> &elements,
+                           std::int32_t nodeId) {
+  for (const auto &element : elements) {
+    if (element.nodeId != nodeId)
+      continue;
+    for (std::size_t slot = 0; slot < element.inputIndices.size(); ++slot) {
+      if (slot < element.inputIsConditioning.size() &&
+          element.inputIsConditioning[slot] != 0)
+        continue;
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+} // namespace
+
+void LiveGraphRuntime::seedIsolatedUpstreamOutputs(std::size_t target,
+                                                   const torch::Tensor &probe) {
+  const auto &elements = implementation->snapshot->implementation->elements;
+  const auto &element = elements[target];
+  for (std::size_t slot = 0; slot < element.inputIndices.size(); ++slot) {
+    const auto upstreamIndex =
+        static_cast<std::size_t>(element.inputIndices[slot]);
+    const auto &upstream = elements[upstreamIndex];
+    const auto isConditioning =
+        slot < element.inputIsConditioning.size() &&
+        element.inputIsConditioning[slot] != 0;
+
+    if (upstream.type == graph::NodeType::knobInput ||
+        upstream.type == graph::NodeType::xyTrackpad || isConditioning ||
+        upstream.outputIsConditioning) {
+      executeElement(upstreamIndex, probe);
+      continue;
+    }
+
+    if (upstream.type == graph::NodeType::audioInput) {
+      implementation->outputs[upstreamIndex] = probe;
+      continue;
+    }
+
+    const auto upstreamOutput = processIsolated(upstream.nodeId, probe);
+    implementation->outputs[upstreamIndex] =
+        upstreamOutput.defined() ? upstreamOutput : probe;
+  }
+}
+
+AnalysisSnapshot
+LiveGraphEngine::analyse(const graph::NodeGraph &graphDocument,
+                         const AnalysisRequest &request,
+                         const LiveGraphCompileOptions &options,
+                         FrozenBlackBoxResolver blackBoxResolver) {
+  AnalysisSnapshot snapshot;
+  snapshot.nodeId = request.nodeId;
+  snapshot.view = request.view;
+  snapshot.generatedAtRevision = request.revision;
+  snapshot.sourceMode = request.liveInputSuitable ? AnalysisSourceMode::live
+                                                  : AnalysisSourceMode::probe;
+  snapshot.status = request.liveInputSuitable ? AnalysisStatus::live
+                                              : AnalysisStatus::probeFallback;
+
+  const auto *node = graphDocument.findNode(request.nodeId);
+  if (node == nullptr) {
+    snapshot.status = AnalysisStatus::unavailable;
+    return snapshot;
+  }
+  snapshot.runtimeState = node->state;
+
+  auto compiled = compile(graphDocument, options, std::move(blackBoxResolver));
+  if (!compiled.succeeded()) {
+    snapshot.status = AnalysisStatus::disconnected;
+    snapshot.channelCount = 1;
+    snapshot.chainSeries = emptySeries(1);
+    snapshot.elementOnlySeries = emptySeries(1);
+    return snapshot;
+  }
+
+  LiveGraphCompileError error;
+  auto runtime = prepare(compiled.snapshot, error);
+  if (runtime == nullptr) {
+    snapshot.status = AnalysisStatus::unavailable;
+    return snapshot;
+  }
+  runtime->bindControls(std::make_shared<const RuntimeControlState>(
+      collectRuntimeControlState(graphDocument)));
+
+  int channelCount = compiled.snapshot->getInputChannels();
+  int inputChannels = compiled.snapshot->getInputChannels();
+  for (const auto &stats : compiled.snapshot->getElementStatistics()) {
+    if (stats.nodeId != request.nodeId)
+      continue;
+    channelCount = std::max(1, stats.outputChannels);
+    inputChannels = std::max(1, stats.inputChannels);
+    break;
+  }
+  snapshot.channelCount = channelCount;
+  snapshot.chainSeries = emptySeries(channelCount);
+  snapshot.elementOnlySeries = emptySeries(channelCount);
+
+  const auto makeInput = [&](float amplitude, int samples) {
+    auto input = torch::full(
+        {1, compiled.snapshot->getInputChannels(), samples}, amplitude,
+        torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+    return input;
+  };
+
+  try {
+    if (request.view == graph::AnalysisView::transfer) {
+      constexpr int sweepPoints = 48;
+      constexpr int blockSamples = 32;
+      for (int point = 0; point < sweepPoints; ++point) {
+        const auto amplitude =
+            -1.0f + 2.0f * static_cast<float>(point) /
+                        static_cast<float>(sweepPoints - 1);
+        runtime->reset();
+        const auto chain = runtime->processTensorTapped(
+            makeInput(amplitude, blockSamples), request.nodeId);
+        appendTransferPoint(snapshot.chainSeries, channelCount, amplitude,
+                            chain);
+        runtime->reset();
+        auto probe = torch::full(
+            {1, inputChannels, blockSamples}, amplitude,
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+        const auto isolated = runtime->processIsolated(request.nodeId, probe);
+        appendTransferPoint(snapshot.elementOnlySeries, channelCount, amplitude,
+                            isolated.defined() ? isolated : probe);
+      }
+      if (request.playbackActive)
+        snapshot.transferMarker =
+            markerOnChain(snapshot.chainSeries, request.liveInputPeak,
+                          request.liveChannelIndex);
+    } else if (request.view == graph::AnalysisView::oscilloscope) {
+      constexpr int waveformSamples = 512;
+      const auto &compiledElements =
+          compiled.snapshot->implementation->elements;
+      const auto useLiveCapture =
+          elementUsesAudioProbe(compiledElements, request.nodeId) &&
+          request.liveInputSuitable && request.liveInput != nullptr &&
+          request.liveInputSamples > 8 && request.liveInputChannels > 0;
+      torch::Tensor elementProbe;
+      if (useLiveCapture) {
+        const auto samples =
+            std::min(request.liveInputSamples, waveformSamples);
+        const auto channels =
+            std::min(request.liveInputChannels, inputChannels);
+        elementProbe = torch::zeros(
+            {1, inputChannels, samples},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+        for (int channel = 0; channel < channels; ++channel) {
+          std::memcpy(elementProbe[0][channel].data_ptr<float>(),
+                      request.liveInput + channel * request.liveInputSamples,
+                      static_cast<std::size_t>(samples) * sizeof(float));
+        }
+        snapshot.sourceMode = AnalysisSourceMode::live;
+        snapshot.status = AnalysisStatus::live;
+      } else {
+        elementProbe = makeSineProbe(inputChannels, waveformSamples,
+                                     request.sampleRate, 220.0f);
+        snapshot.sourceMode = AnalysisSourceMode::probe;
+        snapshot.status = AnalysisStatus::probeFallback;
+      }
+      runtime->reset();
+      const auto isolated =
+          runtime->processIsolated(request.nodeId, elementProbe);
+      fillWaveform(snapshot.elementOnlySeries,
+                   isolated.defined() ? isolated : elementProbe,
+                   request.sampleRate);
+    } else {
+      constexpr int spectrumSamples = 256;
+      torch::Tensor probeInput;
+      if (request.liveInputSuitable && request.liveInput != nullptr &&
+          request.liveInputSamples > 8 && request.liveInputChannels > 0) {
+        const auto samples =
+            std::min(request.liveInputSamples, spectrumSamples);
+        const auto channels = std::min(request.liveInputChannels,
+                                       compiled.snapshot->getInputChannels());
+        probeInput = torch::zeros(
+            {1, compiled.snapshot->getInputChannels(), samples},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+        for (int channel = 0; channel < channels; ++channel) {
+          std::memcpy(probeInput[0][channel].data_ptr<float>(),
+                      request.liveInput + channel * request.liveInputSamples,
+                      static_cast<std::size_t>(samples) * sizeof(float));
+        }
+        snapshot.sourceMode = AnalysisSourceMode::live;
+        snapshot.status = AnalysisStatus::live;
+      } else {
+        probeInput = torch::randn(
+            {1, compiled.snapshot->getInputChannels(), spectrumSamples},
+            torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+        snapshot.sourceMode = AnalysisSourceMode::probe;
+        snapshot.status = AnalysisStatus::probeFallback;
+      }
+      runtime->reset();
+      const auto chain =
+          runtime->processTensorTapped(probeInput, request.nodeId);
+      fillSpectrum(snapshot.chainSeries, probeInput,
+                   chain.defined() ? chain : probeInput, request.view,
+                   request.sampleRate);
+
+      auto isolatedProbe = torch::randn(
+          {1, inputChannels, spectrumSamples},
+          torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+      runtime->reset();
+      const auto isolated =
+          runtime->processIsolated(request.nodeId, isolatedProbe);
+      fillSpectrum(snapshot.elementOnlySeries, isolatedProbe,
+                   isolated.defined() ? isolated : isolatedProbe, request.view,
+                   request.sampleRate);
+    }
+  } catch (const std::exception &) {
+    snapshot.status = AnalysisStatus::unavailable;
+  }
+
+  if (snapshot.chainSeries.size() !=
+          static_cast<std::size_t>(snapshot.channelCount) ||
+      snapshot.elementOnlySeries.size() !=
+          static_cast<std::size_t>(snapshot.channelCount))
+    snapshot.status = AnalysisStatus::unavailable;
+  return snapshot;
 }
 } // namespace auralforge::dsp

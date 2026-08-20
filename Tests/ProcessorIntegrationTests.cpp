@@ -244,6 +244,52 @@ int main() {
   passed &= expect(dcMean < 0.001,
                    "post-graph DC blocker must reject sustained offset");
 
+  auralforge::graph::NodeGraph analysisGraph;
+  const auto analysisInput = analysisGraph.addNode(
+      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+  const auto analysisActivation = analysisGraph.addNode(
+      auralforge::graph::NodeType::activation, {180.0f, 0.0f});
+  const auto analysisOutput = analysisGraph.addNode(
+      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+  analysisGraph.connect(
+      analysisGraph.findNode(analysisInput)->outputs.front().id,
+      analysisGraph.findNode(analysisActivation)->inputs.front().id);
+  analysisGraph.connect(
+      analysisGraph.findNode(analysisActivation)->outputs.front().id,
+      analysisGraph.findNode(analysisOutput)->inputs.front().id);
+  analysisGraph.setFloatProperty(analysisActivation, "gain", 2.5f);
+  const auto xy = analysisGraph.addNode(
+      auralforge::graph::NodeType::xyTrackpad, {0.0f, 120.0f});
+  analysisGraph.setConditioningPad(xy, 0.25f, -0.5f);
+  const auto savedAnalysis = analysisGraph.toValueTree();
+  auralforge::graph::NodeGraph recalledAnalysis;
+  passed &= expect(recalledAnalysis.restoreFromValueTree(savedAnalysis),
+                   "analysis graph with Gain and XY must restore");
+  const auto *recalledActivation =
+      recalledAnalysis.findNode(analysisActivation);
+  const auto *recalledXy = recalledAnalysis.findNode(xy);
+  float recalledGain = 0.0f;
+  if (recalledActivation != nullptr) {
+    for (const auto &property : recalledActivation->properties) {
+      if (property.key == "gain")
+        recalledGain = property.floatValue;
+    }
+  }
+  passed &= expect(std::abs(recalledGain - 2.5f) < 1.0e-4f,
+                   "Gain must survive processor-style graph recall");
+  passed &= expect(recalledXy != nullptr &&
+                       std::abs(recalledXy->conditioningX - 0.25f) < 1.0e-4f &&
+                       std::abs(recalledXy->conditioningY + 0.5f) < 1.0e-4f,
+                   "XY pad values must survive graph recall");
+
+  restored.setGraphState(analysisGraph.toValueTree());
+  passed &= expect(waitForGraphRuntime(restored, 1),
+                   "Gain Activation graph must publish a runtime");
+  auto gained = input;
+  restored.processBlock(gained, midi);
+  passed &= expect(gained.getMagnitude(0, 0, blockSize) > 0.0f,
+                   "Gain on Activation must remain audible");
+
   auralforge::graph::NodeGraph disconnected;
   passed &=
       expect(disconnected.restoreFromValueTree(restored.getGraphState()),

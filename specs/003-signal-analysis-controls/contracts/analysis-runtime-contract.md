@@ -74,9 +74,25 @@ Series {
 - Editor requests: `AuralForge/Source/PluginEditor.cpp`
 - Panel rendering: `AuralForge/Source/ui/InfoPanel.*`
 
+### Dual-curve N-channel notes (T002)
+
+- `AnalysisSnapshot` lives in `LiveGraphEngine.h` with `chainSeries` and `elementOnlySeries` both sized to `channelCount`.
+- Chain compile/run taps the selected node inside a full-graph runtime (`processTensorTapped`); element-only runs the compiled operator in isolation (`processIsolated`) with a probe of the node's input width.
+- Every series carries `channelIndex` plus an optional `channelLabel` (`L`/`R` for stereo, `chN` otherwise). UI must render all traces; do not cap N.
+- Transfer uses a bipolar amplitude sweep; frequency/phase use live capture when suitable and white-noise FFT otherwise.
+- `generatedAtRevision` is compared by `PluginEditor` against the processor graph-revision token; stale snapshots stay visible but flagged until refresh.
+
 ## Computation Notes
 
 - Chain path: compile/run subgraph from graph inputs through selected node output.
 - Element-only path: isolate selected node with probe injected at its input boundary (upstream context excluded).
 - MUST NOT invoke audio-thread `processBlock` for analysis; use copied graph + off-thread runtime prepare/process pattern already used for analysis prototyping.
 - Gold requests route through frozen BlackBox forward at group boundary.
+
+## Implementation Status
+
+Implemented in Phase 2.2 (`tasks.md` T004–T051).
+
+- Dual chain/element-only snapshots are produced by `LiveGraphEngine::analyse` off the audio thread.
+- N-channel series, probe fallback, transfer marker, Gold boundary analysis, and revision tagging are covered by `AuralForgeLiveGraphTests` / `AuralForgeProcessorTests`.
+- Editor consumption is `InfoPanel` + `PluginEditor` with 12 Hz refresh throttling.

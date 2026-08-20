@@ -4,11 +4,14 @@
 
 #include <torch/torch.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace auralforge::dsp {
@@ -92,6 +95,146 @@ public:
 using FrozenBlackBoxResolver =
     std::function<std::shared_ptr<const FrozenBlackBoxFactory>(
         const graph::GraphNode &)>;
+
+/**
+ * @struct RuntimeControlState
+ * @brief Lock-free published Gain and conditioning values for one graph revision.
+ */
+struct RuntimeControlState {
+  /** @brief Per-node Gain overrides used by Activation and TCN elements. */
+  std::unordered_map<std::int32_t, float> gainByNodeId;
+  /** @brief Per-node Knob/XY values; XY stores X in [0] and Y in [1]. */
+  std::unordered_map<std::int32_t, std::array<float, 2>> conditioningByNodeId;
+};
+
+/** @brief Signal source used to compute a static analysis snapshot. */
+enum class AnalysisSourceMode { live, probe };
+
+/** @brief Degraded analysis status reported to the editor panel. */
+enum class AnalysisStatus {
+  live,
+  probeFallback,
+  disconnected,
+  unavailable
+};
+
+/**
+ * @struct AnalysisSeries
+ * @brief Sampled plot trace for one channel or feature dimension.
+ */
+struct AnalysisSeries {
+  /** @brief Zero-based channel or feature index. */
+  int channelIndex = 0;
+  /** @brief Compact legend label such as `L`, `R`, or `ch3`. */
+  std::string channelLabel;
+  /** @brief Sampled horizontal axis values. */
+  std::vector<float> x;
+  /** @brief Sampled vertical axis values. */
+  std::vector<float> y;
+};
+
+/**
+ * @struct TransferMarker
+ * @brief Playback-only operating point constrained to the chain transfer curve.
+ */
+struct TransferMarker {
+  /** @brief Input amplitude used to locate the marker. */
+  float inputLevel = 0.0f;
+  /** @brief Output amplitude lying on the chain curve. */
+  float outputLevel = 0.0f;
+  /** @brief Channel whose chain series the marker follows. */
+  int channelIndex = 0;
+};
+
+/**
+ * @struct AnalysisSnapshot
+ * @brief Immutable dual-family analysis result consumed by InfoPanel.
+ */
+struct AnalysisSnapshot {
+  /** @brief Node that was analysed. */
+  std::int32_t nodeId = 0;
+  /** @brief Live Blue or frozen Gold runtime state of the node. */
+  graph::NodeState runtimeState = graph::NodeState::liveBlue;
+  /** @brief Whether live audio or an internal probe drove the curves. */
+  AnalysisSourceMode sourceMode = AnalysisSourceMode::probe;
+  /** @brief Requested plot family. */
+  graph::AnalysisView view = graph::AnalysisView::transfer;
+  /** @brief Editor-facing degraded-mode status. */
+  AnalysisStatus status = AnalysisStatus::unavailable;
+  /** @brief Number of traces in each curve family. */
+  int channelCount = 0;
+  /** @brief Cumulative chain traces, length `channelCount`. */
+  std::vector<AnalysisSeries> chainSeries;
+  /** @brief Isolated element traces, length `channelCount`. */
+  std::vector<AnalysisSeries> elementOnlySeries;
+  /** @brief Chain-curve marker present only during playback transfer view. */
+  std::optional<TransferMarker> transferMarker;
+  /** @brief Graph revision that produced this snapshot. */
+  std::uint64_t generatedAtRevision = 0;
+  /** @brief True when a newer graph revision exists. */
+  bool isStale = false;
+};
+
+/**
+ * @struct AnalysisRequest
+ * @brief Message-thread description of one analysis computation.
+ */
+struct AnalysisRequest {
+  /** @brief Selected graph node. */
+  std::int32_t nodeId = 0;
+  /** @brief Plot family to compute. */
+  graph::AnalysisView view = graph::AnalysisView::transfer;
+  /** @brief Current graph/control revision token. */
+  std::uint64_t revision = 0;
+  /** @brief True when the host transport is playing. */
+  bool playbackActive = false;
+  /** @brief True when published live audio is loud enough to drive plots. */
+  bool liveInputSuitable = false;
+  /** @brief Latest published host-input peak used by the transfer marker. */
+  float liveInputPeak = 0.0f;
+  /** @brief Latest published tap-output peak used by the transfer marker. */
+  float liveOutputPeak = 0.0f;
+  /** @brief Channel index used when placing the transfer marker. */
+  int liveChannelIndex = 0;
+  /** @brief Host sample rate used to label frequency axes. */
+  double sampleRate = 44100.0;
+  /** @brief Optional captured live input, planar [channels * samples]. */
+  const float *liveInput = nullptr;
+  /** @brief Channel count of `liveInput`. */
+  int liveInputChannels = 0;
+  /** @brief Sample count of `liveInput`. */
+  int liveInputSamples = 0;
+};
+
+/**
+ * @brief Advances a monotonic analysis/graph revision token.
+ * @param current Previous token.
+ * @return Next token, wrapping at the unsigned maximum.
+ */
+inline std::uint64_t nextGraphRevision(std::uint64_t current) noexcept {
+  return current + 1U;
+}
+
+/**
+ * @brief Builds a compact legend label for one analysis trace.
+ * @param channelIndex Zero-based channel or feature index.
+ * @param channelCount Total traces at the analysis point.
+ * @return `L`/`R` for stereo, otherwise `chN`.
+ */
+inline std::string analysisChannelLabel(int channelIndex,
+                                        int channelCount) {
+  if (channelCount == 2)
+    return channelIndex == 0 ? std::string("L") : std::string("R");
+  return "ch" + std::to_string(channelIndex + 1);
+}
+
+/**
+ * @brief Collects Gain and Knob/XY values from an editable graph document.
+ * @param graphDocument Message-thread graph.
+ * @return Control table suitable for atomic audio-thread publication.
+ */
+[[nodiscard]] RuntimeControlState
+collectRuntimeControlState(const graph::NodeGraph &graphDocument);
 
 /**
  * @enum LiveGraphErrorCode
@@ -286,6 +429,41 @@ public:
                    std::size_t sampleCount) noexcept;
 
   /**
+   * @brief Publishes the latest message-thread Gain/conditioning table.
+   * @param controls Immutable control table, or null to use compiled defaults.
+   */
+  void bindControls(
+      std::shared_ptr<const RuntimeControlState> controls) noexcept;
+
+  /**
+   * @brief Processes one input block and returns the tapped node output.
+   * @param input Current input block shaped [1, channels, samples].
+   * @param nodeId Stable graph node to tap.
+   * @return Tensor at the selected node, or an undefined tensor when absent.
+   */
+  torch::Tensor processTensorTapped(const torch::Tensor &input,
+                                    std::int32_t nodeId);
+
+  /**
+   * @brief Runs one compiled element in isolation with a probe at its input.
+   * @param nodeId Stable graph node to isolate.
+   * @param probe Probe tensor shaped [1, inputChannels, samples].
+   * @return Isolated element output, or an undefined tensor when absent.
+   */
+  torch::Tensor processIsolated(std::int32_t nodeId,
+                                const torch::Tensor &probe);
+
+  /**
+   * @brief Returns the latest audio-thread peak pair for one compiled node.
+   * @param nodeId Stable graph node identifier.
+   * @param inputPeak Receives the upstream peak.
+   * @param outputPeak Receives the node-output peak.
+   * @return True when the node is present in this runtime.
+   */
+  [[nodiscard]] bool getTapPeaks(std::int32_t nodeId, float &inputPeak,
+                                 float &outputPeak) const noexcept;
+
+  /**
    * @brief Returns the latest measured inference time for one frozen node.
    * @param nodeId Stable graph node identifier.
    * @return Per-buffer duration in milliseconds, or zero when unavailable.
@@ -312,6 +490,21 @@ private:
 
   /** @brief Grants the compiler access to runtime construction. */
   friend class LiveGraphEngine;
+
+  /**
+   * @brief Populates upstream tensors before an isolated element executes.
+   * @param target Topological index of the isolated element.
+   * @param probe Probe tensor injected at audio input boundaries.
+   */
+  void seedIsolatedUpstreamOutputs(std::size_t target,
+                                   const torch::Tensor &probe);
+
+  /**
+   * @brief Executes one compiled element into prepared runtime storage.
+   * @param index Topological element index.
+   * @param blockInput Current graph input block.
+   */
+  void executeElement(std::size_t index, const torch::Tensor &blockInput);
 };
 
 /**
@@ -327,9 +520,11 @@ public:
    * @param blackBoxResolver Optional resolver required by frozen graph nodes.
    * @return Immutable snapshot or detailed validation failure.
    *
-   * Unwired processing nodes are ignored. Only the Audio Input-to-Output path
-   * is executed. A missing complete path returns `incompletePath` rather than a
-   * validation error, so incomplete graphs may sit on the canvas.
+   * Unwired processing nodes are ignored. Nodes that can reach Audio Output are
+   * executed when a complete Audio Input-to-Output path exists, including
+   * Knob/XY subgraphs that join that path. A missing complete path returns
+   * `incompletePath` rather than a validation error, so incomplete graphs may
+   * sit on the canvas.
    */
   [[nodiscard]] static LiveGraphCompileResult
   compile(const graph::NodeGraph &graphDocument,
@@ -345,5 +540,18 @@ public:
   [[nodiscard]] static std::shared_ptr<LiveGraphRuntime>
   prepare(std::shared_ptr<const LiveGraphSnapshot> snapshot,
           LiveGraphCompileError &error);
+
+  /**
+   * @brief Computes dual chain/element-only analysis off the audio thread.
+   * @param graphDocument Message-thread graph document to analyse.
+   * @param request Selected node, view, live-capture, and revision metadata.
+   * @param options Host shape and maximum block constraints.
+   * @param blackBoxResolver Optional resolver required by frozen graph nodes.
+   * @return Snapshot tagged with `generatedAtRevision`; never mutates audio state.
+   */
+  [[nodiscard]] static AnalysisSnapshot
+  analyse(const graph::NodeGraph &graphDocument, const AnalysisRequest &request,
+          const LiveGraphCompileOptions &options,
+          FrozenBlackBoxResolver blackBoxResolver = {});
 };
 } // namespace auralforge::dsp

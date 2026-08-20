@@ -107,3 +107,13 @@ ctest --test-dir build --output-on-failure
 - `contracts/analysis-runtime-contract.md`
 - `contracts/graph-control-ui-contract.md`
 - `plan.md`, `tasks.md`
+
+## Automated Validation Outcomes (2026-08-19)
+
+| Check | Result |
+|-------|--------|
+| `AuralForgeLiveGraphTests` | PASS — dual-curve analysis, probe fallback, Knob→Merge compile/runtime, Knob ValueTree recall |
+| `AuralForgeProcessorTests` | PASS — Gain + XY persistence, audible Activation Gain path, existing freeze/silence/recall invariants |
+| `AuralForge_VST3` | PASS — Release build succeeded |
+
+Host-UI walkthrough of scenarios 1–9 remains recommended in Ableton after loading the VST3.

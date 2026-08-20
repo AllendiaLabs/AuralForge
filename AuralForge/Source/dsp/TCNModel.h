@@ -19,6 +19,8 @@ struct TCNConfiguration {
   int inputChannels = 2;
   int outputChannels = 2;
   ActivationType activation = ActivationType::relu;
+  /** @brief Pre-nonlinearity Gain applied to each TCN activation stage. */
+  float gain = 1.0f;
 
   /** @brief Returns true when all values can be represented by LibTorch Conv1d.
    */

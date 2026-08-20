@@ -146,10 +146,14 @@ std::uint64_t TCNModel::getArchitectureHash() const noexcept {
   hashCombine(hash, static_cast<std::uint64_t>(config.inputChannels));
   hashCombine(hash, static_cast<std::uint64_t>(config.outputChannels));
   hashCombine(hash, static_cast<std::uint64_t>(config.activation));
+  hashCombine(hash, static_cast<std::uint64_t>(
+                        static_cast<int>(config.gain * 1000.0f)));
   return hash;
 }
 
 torch::Tensor TCNModel::applyActivation(torch::Tensor value) const {
+  if (std::abs(config.gain - 1.0f) > 1.0e-6f)
+    value = value * config.gain;
   switch (config.activation) {
   case ActivationType::relu:
     return torch::relu(value);

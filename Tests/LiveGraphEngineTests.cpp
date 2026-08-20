@@ -408,6 +408,215 @@ int main() {
                        openCompiled.error.code == LiveGraphErrorCode::incompletePath,
                    "disconnected stereo I/O must stay idle without a live runtime");
 
+  auralforge::graph::NodeGraph activationGraph;
+  const auto activationInput = activationGraph.addNode(
+      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+  const auto activationNode = activationGraph.addNode(
+      auralforge::graph::NodeType::activation, {180.0f, 0.0f});
+  const auto activationOutput = activationGraph.addNode(
+      auralforge::graph::NodeType::audioOutput, {360.0f, 0.0f});
+  activationGraph.connect(
+      activationGraph.findNode(activationInput)->outputs.front().id,
+      activationGraph.findNode(activationNode)->inputs.front().id);
+  activationGraph.connect(
+      activationGraph.findNode(activationNode)->outputs.front().id,
+      activationGraph.findNode(activationOutput)->inputs.front().id);
+  passed &= expect(activationGraph.setFloatProperty(activationNode, "gain", 4.0f),
+                   "Activation Gain must persist as a real property");
+  const auto activationCompiled =
+      LiveGraphEngine::compile(activationGraph, options);
+  passed &= expect(activationCompiled.succeeded(),
+                   "Activation graph with Gain must compile");
+
+  auralforge::dsp::AnalysisRequest analysisRequest;
+  analysisRequest.nodeId = activationNode;
+  analysisRequest.view = auralforge::graph::AnalysisView::transfer;
+  analysisRequest.revision = 1;
+  const auto transfer = LiveGraphEngine::analyse(activationGraph,
+                                                 analysisRequest, options);
+  passed &= expect(transfer.channelCount >= 2 &&
+                       transfer.chainSeries.size() ==
+                           static_cast<std::size_t>(transfer.channelCount) &&
+                       transfer.elementOnlySeries.size() ==
+                           static_cast<std::size_t>(transfer.channelCount),
+                   "analysis must return dual N-channel curve families");
+  analysisRequest.view = auralforge::graph::AnalysisView::frequency;
+  const auto frequency = LiveGraphEngine::analyse(activationGraph,
+                                                  analysisRequest, options);
+  passed &= expect(frequency.sourceMode == AnalysisSourceMode::probe &&
+                       !frequency.chainSeries.empty() &&
+                       !frequency.chainSeries.front().x.empty(),
+                   "frequency analysis must fall back to a probe when silent");
+  analysisRequest.view = auralforge::graph::AnalysisView::oscilloscope;
+  analysisRequest.sampleRate = 44100.0;
+  const auto oscilloscope = LiveGraphEngine::analyse(activationGraph,
+                                                     analysisRequest, options);
+  passed &= expect(oscilloscope.view ==
+                           auralforge::graph::AnalysisView::oscilloscope &&
+                       oscilloscope.sourceMode == AnalysisSourceMode::probe &&
+                       oscilloscope.elementOnlySeries.size() >= 2 &&
+                       oscilloscope.elementOnlySeries.front().x.size() >= 2 &&
+                       oscilloscope.elementOnlySeries.front().y.size() >= 2,
+                   "oscilloscope analysis must return element waveforms");
+
+  auralforge::graph::NodeGraph knobGraph;
+  const auto knobInput = knobGraph.addNode(
+      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+  const auto knob = knobGraph.addNode(auralforge::graph::NodeType::knobInput,
+                                      {0.0f, 80.0f});
+  const auto knobMerge =
+      knobGraph.addNode(auralforge::graph::NodeType::merge, {180.0f, 20.0f});
+  const auto knobTcn =
+      knobGraph.addNode(auralforge::graph::NodeType::tcn, {360.0f, 20.0f});
+  const auto knobOutput = knobGraph.addNode(
+      auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+  knobGraph.setProperty(knobTcn, "channels", 2);
+  knobGraph.setConditioningValue(knob, 1.5f);
+  passed &= expect(
+      knobGraph
+          .connect(knobGraph.findNode(knobInput)->outputs.front().id,
+                   knobGraph.findNode(knobMerge)->inputs[0].id)
+          .accepted,
+      "Audio In must connect to Merge");
+  passed &= expect(
+      knobGraph
+          .connect(knobGraph.findNode(knob)->outputs.front().id,
+                   knobGraph.findNode(knobMerge)->inputs[1].id)
+          .accepted,
+      "Knob Input must connect to Merge");
+  passed &= expect(
+      knobGraph
+          .connect(knobGraph.findNode(knobMerge)->outputs.front().id,
+                   knobGraph.findNode(knobTcn)->inputs.front().id)
+          .accepted,
+      "Merge must connect to TCN");
+  passed &= expect(
+      knobGraph
+          .connect(knobGraph.findNode(knobTcn)->outputs.front().id,
+                   knobGraph.findNode(knobOutput)->inputs.front().id)
+          .accepted,
+      "TCN must connect to Audio Out");
+  const auto knobCompiled = LiveGraphEngine::compile(knobGraph, options);
+  passed &= expect(knobCompiled.succeeded(),
+                   "Knob-through-Merge graph must compile");
+  LiveGraphCompileError knobError;
+  const auto knobRuntime =
+      LiveGraphEngine::prepare(knobCompiled.snapshot, knobError);
+  passed &= expect(knobRuntime != nullptr, "Knob graph must prepare");
+  if (knobRuntime != nullptr) {
+    auto controls = collectRuntimeControlState(knobGraph);
+    knobRuntime->bindControls(
+        std::make_shared<const RuntimeControlState>(controls));
+    auto ones = torch::ones({1, 2, 8}, torch::kFloat32);
+    const auto withKnob = knobRuntime->processTensor(ones);
+    passed &= expect(withKnob.defined() && withKnob.size(1) == 2,
+                     "Knob-conditioned graph must produce stereo output");
+    auto zeros = torch::zeros({1, 2, 64}, torch::kFloat32);
+    auto blockOnes = torch::ones({1, 2, 64}, torch::kFloat32);
+    knobRuntime->reset();
+    const auto isolatedZeros =
+        knobRuntime->processIsolated(knobMerge, zeros);
+    knobRuntime->reset();
+    const auto isolatedOnes = knobRuntime->processIsolated(knobMerge, blockOnes);
+    passed &= expect(isolatedZeros.defined() && isolatedOnes.defined(),
+                     "Merge isolation must produce output");
+    passed &= expect(
+        std::abs(isolatedZeros[0][0][0].item<float>() - 1.5f) < 1.0e-4f &&
+            std::abs(isolatedOnes[0][0][0].item<float>() - 2.5f) < 1.0e-4f,
+        "isolated Merge must keep conditioning inputs instead of the probe");
+  }
+  analysisRequest.nodeId = knob;
+  analysisRequest.liveInputSuitable = true;
+  analysisRequest.liveInputChannels = 2;
+  analysisRequest.liveInputSamples = 64;
+  std::array<float, 128> fakeLive{};
+  for (std::size_t index = 0; index < fakeLive.size(); ++index)
+    fakeLive[index] = std::sin(static_cast<float>(index) * 0.11f);
+  analysisRequest.liveInput = fakeLive.data();
+  analysisRequest.view = auralforge::graph::AnalysisView::oscilloscope;
+  const auto knobOscilloscope = LiveGraphEngine::analyse(knobGraph, analysisRequest,
+                                                         options);
+  passed &= expect(
+      knobOscilloscope.sourceMode == AnalysisSourceMode::probe &&
+          knobOscilloscope.elementOnlySeries.size() >= 1 &&
+          !knobOscilloscope.elementOnlySeries.front().y.empty() &&
+          std::abs(knobOscilloscope.elementOnlySeries.front().y.front() - 1.5f) <
+              1.0e-3f,
+      "conditioning-source oscilloscope must ignore live audio capture");
+
+  const auto restoredTree = knobGraph.toValueTree();
+  auralforge::graph::NodeGraph restoredKnob;
+  passed &= expect(restoredKnob.restoreFromValueTree(restoredTree),
+                   "Knob graph must serialize");
+  const auto *restoredKnobNode = restoredKnob.findNode(knob);
+  passed &= expect(restoredKnobNode != nullptr &&
+                       std::abs(restoredKnobNode->conditioningValue - 1.5f) <
+                           1.0e-4f,
+                   "Knob conditioning value must survive ValueTree recall");
+
+  auralforge::graph::NodeGraph xyVolumeGraph;
+  const auto xyVolumeInput = xyVolumeGraph.addNode(
+      auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+  const auto xyPad = xyVolumeGraph.addNode(
+      auralforge::graph::NodeType::xyTrackpad, {0.0f, 80.0f});
+  const auto xyConcat =
+      xyVolumeGraph.addNode(auralforge::graph::NodeType::merge, {180.0f, 80.0f});
+  const auto xyMultiply =
+      xyVolumeGraph.addNode(auralforge::graph::NodeType::merge, {360.0f, 20.0f});
+  const auto xyVolumeOutput = xyVolumeGraph.addNode(
+      auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+  xyVolumeGraph.setProperty(xyConcat, "mode", 2);
+  xyVolumeGraph.setProperty(xyMultiply, "mode", 1);
+  xyVolumeGraph.setConditioningPad(xyPad, 0.5f, 2.0f);
+  const auto *xyPadNode = xyVolumeGraph.findNode(xyPad);
+  const auto *xyConcatNode = xyVolumeGraph.findNode(xyConcat);
+  const auto *xyMultiplyNode = xyVolumeGraph.findNode(xyMultiply);
+  passed &= expect(
+      xyPadNode != nullptr && xyConcatNode != nullptr &&
+          xyMultiplyNode != nullptr &&
+          xyVolumeGraph
+              .connect(xyPadNode->outputs[0].id, xyConcatNode->inputs[0].id)
+              .accepted &&
+          xyVolumeGraph
+              .connect(xyPadNode->outputs[1].id, xyConcatNode->inputs[1].id)
+              .accepted,
+      "XY X and Y must concatenate");
+  passed &= expect(
+      xyVolumeGraph
+          .connect(xyVolumeGraph.findNode(xyVolumeInput)->outputs.front().id,
+                   xyMultiplyNode->inputs[0].id)
+          .accepted &&
+          xyVolumeGraph
+              .connect(xyConcatNode->outputs.front().id,
+                       xyMultiplyNode->inputs[1].id)
+              .accepted &&
+          xyVolumeGraph
+              .connect(xyMultiplyNode->outputs.front().id,
+                       xyVolumeGraph.findNode(xyVolumeOutput)->inputs.front().id)
+              .accepted,
+      "concatenated XY must multiply with audio");
+  const auto xyVolumeCompiled = LiveGraphEngine::compile(xyVolumeGraph, options);
+  passed &= expect(xyVolumeCompiled.succeeded(),
+                   "XY concatenate-then-multiply graph must compile");
+  LiveGraphCompileError xyVolumeError;
+  const auto xyVolumeRuntime =
+      LiveGraphEngine::prepare(xyVolumeCompiled.snapshot, xyVolumeError);
+  passed &= expect(xyVolumeRuntime != nullptr,
+                   "XY concatenate-then-multiply graph must prepare");
+  if (xyVolumeRuntime != nullptr) {
+    xyVolumeRuntime->bindControls(
+        std::make_shared<const RuntimeControlState>(
+            collectRuntimeControlState(xyVolumeGraph)));
+    auto ones = torch::ones({1, 2, 8}, torch::kFloat32);
+    const auto scaled = xyVolumeRuntime->processTensor(ones);
+    passed &= expect(scaled.defined() && scaled.size(1) == 2 &&
+                         std::abs(scaled[0][0][0].item<float>() - 0.5f) <
+                             1.0e-5f &&
+                         std::abs(scaled[0][1][0].item<float>() - 2.0f) <
+                             1.0e-5f,
+                     "concatenated XY must scale stereo audio per channel");
+  }
+
   if (passed)
     std::cout << "AuralForge live graph engine tests passed\n";
   return passed ? 0 : 1;

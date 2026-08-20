@@ -103,3 +103,9 @@ Implementation follows `tasks.md`. Shared plumbing first, then US1 (analysis), U
 - Graph: `GraphTypes.h`, `NodeGraph.*`, `NodeRenderer.*`
 - Analysis UI: `ui/InfoPanel.*`, `PluginEditor.*`
 - Runtime/analysis: `dsp/LiveGraphEngine.*`, `PluginProcessor.*`
+
+**Cross-link verification (T001)**
+- `data-model.md` entities (Gain, Knob/XY, Merge lanes, AnalysisSnapshot) map to `GraphTypes.h` and `LiveGraphEngine.h`.
+- `contracts/analysis-runtime-contract.md` maps to `LiveGraphEngine` snapshot production, `PluginProcessor` revision/live-capture, and `InfoPanel` consumption.
+- `contracts/graph-control-ui-contract.md` maps to `NodeGraph` validation/persistence and `NodeRenderer` menu/controls.
+- `quickstart.md` scenarios 1–9 are the independent tests listed on US1–US4 in `tasks.md`.

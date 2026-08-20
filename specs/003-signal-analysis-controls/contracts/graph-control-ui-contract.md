@@ -72,3 +72,19 @@ Knob Input and XY Trackpad are UI/control sources and MUST NOT be included in To
 - Validation + persistence: `AuralForge/Source/graph/NodeGraph.cpp`
 - Rendering: `AuralForge/Source/graph/NodeRenderer.cpp`
 - Editor orchestration: `AuralForge/Source/PluginEditor.cpp`
+
+### Knob / XY / Merge conditioning notes (T003)
+
+- `NodeType::knobInput` and `NodeType::xyTrackpad` are source elements (`SignalKind::conditioning` outputs). They persist `conditioningValue` / `conditioningX`+`conditioningY` in the graph `ValueTree`.
+- Connection validation accepts conditioning → Merge and conditioning → existing processing inputs; channel mismatch is resolved by broadcast, not refusal.
+- Merge classifies each connected source as audio or conditioning. Add/multiply combine conditioning scalars and broadcast onto audio; concatenate ignores conditioning lanes. Missing conditioning is `c = 0` (audio path unchanged).
+- Knob/XY value edits publish `RuntimeControlState` without a full graph recompile. Topology changes still recompile.
+- Knob Input and XY Trackpad are excluded from freeze subgraph compilation.
+
+## Implementation Status
+
+Implemented in Phase 2.2 (`tasks.md` T004–T051).
+
+- Knob Input and XY Trackpad appear in the element menu, persist in `ValueTree`, and publish `RuntimeControlState` without a full recompile.
+- Merge accepts audio + conditioning; add/multiply broadcast scalars onto audio; missing conditioning is `c = 0`.
+- Gain is a real inline property on Activation and TCN (0.1–10.0, default 1.0).

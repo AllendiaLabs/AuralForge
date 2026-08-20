@@ -20,15 +20,19 @@ struct PaletteItem {
   auralforge::graph::NodeType type;
 };
 
-constexpr std::array<PaletteItem, 5> paletteItems{{
+constexpr std::array<PaletteItem, 7> paletteItems{{
     {"Linear", auralforge::graph::NodeType::linear},
     {"Conv1D", auralforge::graph::NodeType::convolution},
     {"Activation", auralforge::graph::NodeType::activation},
     {"TCN", auralforge::graph::NodeType::tcn},
     {"Merge", auralforge::graph::NodeType::merge},
+    {"Knob Input", auralforge::graph::NodeType::knobInput},
+    {"XY Trackpad", auralforge::graph::NodeType::xyTrackpad},
 }};
 
 constexpr float nodeBodyWidth = 188.0f;
+/** @brief Width reserved for right-aligned property value controls. */
+constexpr float propertyValueWidth = 76.0f;
 /** @brief Multiplier applied to canvas pan gestures. */
 constexpr float canvasPanSpeed = 2.0f;
 /** @brief Base scroll-wheel pan distance in screen pixels. */
@@ -138,6 +142,28 @@ int propertyDragSteps(const char *id, ImVec2 size) {
   storage->SetFloat(storageId, accum);
   return steps;
 }
+
+/**
+ * @brief Draws a left-aligned property label and moves the cursor to the value
+ *        column on the right edge of the node body.
+ * @param label Property label text.
+ */
+void beginPropertyRow(const char *label) {
+  const auto rowStart = ImGui::GetCursorPosX();
+  ImGui::TextUnformatted(label);
+  ImGui::SameLine();
+  ImGui::SetCursorPosX(rowStart + nodeBodyWidth - propertyValueWidth);
+  ImGui::SetNextItemWidth(propertyValueWidth);
+}
+
+/**
+ * @brief Returns true when a palette type can be inserted onto an existing cable.
+ * @param type Palette element type.
+ * @return False for source-only Knob/XY elements.
+ */
+bool canInsertOnLink(auralforge::graph::NodeType type) noexcept {
+  return !auralforge::graph::isConditioningSourceType(type);
+}
 } // namespace
 
 namespace auralforge::graph {
@@ -149,6 +175,7 @@ void NodeRenderer::render(NodeGraph &graph,
                           const NodeRendererCallbacks &callbacks,
                           float pinchMagnification) {
   mutatedThisFrame = false;
+  layoutMutatedThisFrame = false;
   recompileThisFrame = false;
   if (context == nullptr) {
     ed::Config configuration;
@@ -271,7 +298,7 @@ void NodeRenderer::render(NodeGraph &graph,
         std::abs(node.position.y - position.y) >
             std::numeric_limits<float>::epsilon()) {
       graph.moveNode(node.id, {position.x, position.y});
-      mutatedThisFrame = true;
+      layoutMutatedThisFrame = true;
     }
     if (size.x > 0.0f && size.y > 0.0f)
       node.size = {size.x, size.y};
@@ -294,7 +321,13 @@ void NodeRenderer::render(NodeGraph &graph,
   ed::SetCurrentEditor(nullptr);
   ImGui::EndChild();
   if (mutatedThisFrame && callbacks.documentChanged)
-    callbacks.documentChanged(recompileThisFrame);
+    callbacks.documentChanged(recompileThisFrame, true);
+  else if (layoutMutatedThisFrame && callbacks.documentChanged)
+    callbacks.documentChanged(false, false);
+}
+
+std::int32_t NodeRenderer::getPrimarySelectedNodeId() const noexcept {
+  return selectedNodeIds.empty() ? 0 : selectedNodeIds.front();
 }
 
 void NodeRenderer::renderPalette(NodeGraph &graph) {
@@ -353,6 +386,10 @@ void NodeRenderer::renderNode(NodeGraph &graph, GraphNode &node,
 
   ImGui::TextDisabled("%s", node.detail.c_str());
   const auto frozen = node.state == NodeState::frozenGold;
+  if (node.type == NodeType::knobInput)
+    renderKnobControl(graph, node, callbacks);
+  else if (node.type == NodeType::xyTrackpad)
+    renderXyPad(graph, node, callbacks);
   if (frozen)
     ImGui::BeginDisabled();
   for (auto &property : node.properties) {
@@ -360,13 +397,13 @@ void NodeRenderer::renderNode(NodeGraph &graph, GraphNode &node,
     auto value = property.value;
     bool changed = false;
     int dragSteps = 0;
+    beginPropertyRow(property.label.c_str());
     if (property.kind == PropertyKind::choice && !property.choices.empty()) {
       const auto choiceIndex =
           std::clamp(value, 0, static_cast<int>(property.choices.size()) - 1);
-      ImGui::SetNextItemWidth(76.0f);
       if (ImGui::Button(
               property.choices[static_cast<std::size_t>(choiceIndex)].c_str(),
-              ImVec2(76.0f, 0.0f))) {
+              ImVec2(propertyValueWidth, 0.0f))) {
         activePropertyCombo.nodeId = node.id;
         activePropertyCombo.propertyKey = property.key;
         activePropertyCombo.active = true;
@@ -374,14 +411,65 @@ void NodeRenderer::renderNode(NodeGraph &graph, GraphNode &node,
         activePropertyCombo.anchorMin =
             ed::CanvasToScreen(ImGui::GetItemRectMin());
       }
-    } else {
-      constexpr float fieldWidth = 76.0f;
+    } else if (property.kind == PropertyKind::real) {
       constexpr float handleWidth = 18.0f;
       const auto fieldHeight = ImGui::GetFrameHeight();
       const auto fieldOrigin = ImGui::GetCursorScreenPos();
       ImGui::GetWindowDrawList()->AddRectFilled(
           fieldOrigin,
-          ImVec2(fieldOrigin.x + fieldWidth, fieldOrigin.y + fieldHeight),
+          ImVec2(fieldOrigin.x + propertyValueWidth,
+                 fieldOrigin.y + fieldHeight),
+          ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
+
+      auto floatValue = property.floatValue;
+      dragSteps = propertyDragSteps("##drag", ImVec2(handleWidth, fieldHeight));
+      if (dragSteps != 0) {
+        const auto span = property.floatMaximum - property.floatMinimum;
+        const auto stepPerTick =
+            ImGui::GetIO().KeyShift ? span / 2000.0f : span / 200.0f;
+        floatValue += static_cast<float>(dragSteps) * stepPerTick;
+        changed = true;
+      }
+      ImGui::SameLine(0.0f, 0.0f);
+      ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+      ImGui::SetNextItemWidth(propertyValueWidth - handleWidth);
+      changed = ImGui::InputFloat("##gain", &floatValue, 0.0f, 0.0f, "%.2f") ||
+                changed;
+      ImGui::PopStyleVar();
+      ImGui::PopStyleColor();
+      if (changed) {
+        if (floatValue < property.floatMinimum ||
+            floatValue > property.floatMaximum) {
+          transientMessage = property.label + " must be between " +
+                             std::to_string(property.floatMinimum) + " and " +
+                             std::to_string(property.floatMaximum);
+          transientMessageDeadline = ImGui::GetTime() + 2.5;
+          if (callbacks.showMessage)
+            callbacks.showMessage(transientMessage);
+        }
+        const auto previous = property.floatValue;
+        property.setFloatValue(floatValue);
+        if (std::abs(property.floatValue - previous) > 1.0e-6f) {
+          if (!graph.setFloatProperty(node.id, property.key,
+                                      property.floatValue)) {
+            property.setFloatValue(previous);
+          } else {
+            mutatedThisFrame = true;
+            if (callbacks.floatPropertyChanged)
+              callbacks.floatPropertyChanged(node.id, property.key,
+                                             property.floatValue);
+          }
+        }
+      }
+    } else {
+      constexpr float handleWidth = 18.0f;
+      const auto fieldHeight = ImGui::GetFrameHeight();
+      const auto fieldOrigin = ImGui::GetCursorScreenPos();
+      ImGui::GetWindowDrawList()->AddRectFilled(
+          fieldOrigin,
+          ImVec2(fieldOrigin.x + propertyValueWidth,
+                 fieldOrigin.y + fieldHeight),
           ImGui::GetColorU32(ImGuiCol_FrameBg), ImGui::GetStyle().FrameRounding);
 
       dragSteps = propertyDragSteps("##drag", ImVec2(handleWidth, fieldHeight));
@@ -390,14 +478,12 @@ void NodeRenderer::renderNode(NodeGraph &graph, GraphNode &node,
       ImGui::SameLine(0.0f, 0.0f);
       ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
       ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-      ImGui::SetNextItemWidth(fieldWidth - handleWidth);
+      ImGui::SetNextItemWidth(propertyValueWidth - handleWidth);
       changed = ImGui::InputInt("##value", &value, 0, 0) || dragSteps != 0;
       ImGui::PopStyleVar();
       ImGui::PopStyleColor();
     }
-    ImGui::SameLine();
-    ImGui::TextUnformatted(property.label.c_str());
-    if (changed) {
+    if (changed && property.kind != PropertyKind::real) {
       if (dragSteps == 0 &&
           (value < property.minimum || value > property.maximum)) {
         transientMessage = property.label + " must be between " +
@@ -441,7 +527,21 @@ void NodeRenderer::renderNode(NodeGraph &graph, GraphNode &node,
 
     if (!node.useExplicitSeed)
       ImGui::BeginDisabled();
-    ImGui::SetNextItemWidth(76.0f);
+    const auto rowStart = ImGui::GetCursorPosX();
+    ImGui::TextUnformatted("Seed");
+    ImGui::SameLine();
+    constexpr float seedControlWidth = 96.0f;
+    ImGui::SetCursorPosX(rowStart + nodeBodyWidth - seedControlWidth);
+    if (ImGui::Checkbox("##useExplicitSeed", &node.useExplicitSeed)) {
+      if (node.useExplicitSeed)
+        std::snprintf(seedBuffer.data(), seedBuffer.size(), "%d",
+                      node.explicitSeed);
+      else
+        std::snprintf(seedBuffer.data(), seedBuffer.size(), "%d", node.seed);
+      mutatedThisFrame = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(seedControlWidth - ImGui::GetFrameHeight() - 8.0f);
     if (ImGui::InputText("##seed", seedBuffer.data(), seedBuffer.size(),
                          ImGuiInputTextFlags_EnterReturnsTrue)) {
       std::int32_t parsed = 0;
@@ -465,18 +565,8 @@ void NodeRenderer::renderNode(NodeGraph &graph, GraphNode &node,
     }
     if (!node.useExplicitSeed)
       ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Checkbox("##useExplicitSeed", &node.useExplicitSeed)) {
-      if (node.useExplicitSeed)
-        std::snprintf(seedBuffer.data(), seedBuffer.size(), "%d",
-                      node.explicitSeed);
-      else
-        std::snprintf(seedBuffer.data(), seedBuffer.size(), "%d", node.seed);
-      mutatedThisFrame = true;
-    }
-    ImGui::SameLine();
-    ImGui::TextUnformatted("Seed");
-    if (ImGui::Button("Randomize Weights") && callbacks.randomizeNode) {
+    if (ImGui::Button("Randomize Weights", ImVec2(nodeBodyWidth, 0.0f)) &&
+        callbacks.randomizeNode) {
       auto appliedSeed = node.explicitSeed;
       if (node.useExplicitSeed) {
         std::int32_t parsed = 0;
@@ -514,9 +604,65 @@ void NodeRenderer::renderNode(NodeGraph &graph, GraphNode &node,
     ed::EndPin();
   }
 
+  if (ImGui::SmallButton("Analyze") && callbacks.analysisRequested)
+    callbacks.analysisRequested(node.id);
+
   ImGui::PopID();
   ed::EndNode();
   ed::PopStyleColor(2);
+}
+
+void NodeRenderer::renderKnobControl(NodeGraph &graph, GraphNode &node,
+                                     const NodeRendererCallbacks &callbacks) {
+  auto value = node.conditioningValue;
+  ImGui::SetNextItemWidth(76.0f);
+  if (ImGui::VSliderFloat("##knob", ImVec2(28.0f, 72.0f), &value,
+                          conditioningMinimum, conditioningMaximum, "")) {
+    graph.setConditioningValue(node.id, value);
+    if (callbacks.knobChanged)
+      callbacks.knobChanged(node.id, node.conditioningValue);
+  }
+  ImGui::SameLine();
+  ImGui::Text("%.2f", static_cast<double>(node.conditioningValue));
+}
+
+void NodeRenderer::renderXyPad(NodeGraph &graph, GraphNode &node,
+                               const NodeRendererCallbacks &callbacks) {
+  const ImVec2 padSize{118.0f, 118.0f};
+  const auto origin = ImGui::GetCursorScreenPos();
+  ImGui::InvisibleButton("##xypad", padSize);
+  const auto hovered = ImGui::IsItemHovered();
+  const auto active = ImGui::IsItemActive();
+  auto *draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(origin,
+                      ImVec2(origin.x + padSize.x, origin.y + padSize.y),
+                      ImGui::GetColorU32(ImGuiCol_FrameBg), 4.0f);
+  draw->AddRect(origin, ImVec2(origin.x + padSize.x, origin.y + padSize.y),
+                ImGui::GetColorU32(ImGuiCol_Border), 4.0f);
+  const auto normalize = [](float value) {
+    return (clampConditioning(value) - conditioningMinimum) /
+           (conditioningMaximum - conditioningMinimum);
+  };
+  auto handle = ImVec2(origin.x + normalize(node.conditioningX) * padSize.x,
+                       origin.y + (1.0f - normalize(node.conditioningY)) *
+                                      padSize.y);
+  if ((hovered || active) && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+    const auto mouse = ImGui::GetIO().MousePos;
+    const auto nx = std::clamp((mouse.x - origin.x) / padSize.x, 0.0f, 1.0f);
+    const auto ny =
+        std::clamp(1.0f - (mouse.y - origin.y) / padSize.y, 0.0f, 1.0f);
+    const auto x =
+        conditioningMinimum + nx * (conditioningMaximum - conditioningMinimum);
+    const auto y =
+        conditioningMinimum + ny * (conditioningMaximum - conditioningMinimum);
+    graph.setConditioningPad(node.id, x, y);
+    if (callbacks.xyChanged)
+      callbacks.xyChanged(node.id, node.conditioningX, node.conditioningY);
+    handle = ImVec2(origin.x + nx * padSize.x, origin.y + (1.0f - ny) * padSize.y);
+  }
+  draw->AddCircleFilled(handle, 5.0f, ImGui::GetColorU32(ImGuiCol_SliderGrabActive));
+  ImGui::Text("X %.2f  Y %.2f", static_cast<double>(node.conditioningX),
+              static_cast<double>(node.conditioningY));
 }
 
 void NodeRenderer::handleConnections(NodeGraph &graph,
@@ -645,6 +791,8 @@ void NodeRenderer::handleContextMenus(NodeGraph &graph,
     if (ImGui::BeginMenu("Insert")) {
       const auto *link = graph.findLink(contextLinkId);
       for (const auto &item : paletteItems) {
+        if (!canInsertOnLink(item.type))
+          continue;
         if (ImGui::MenuItem(item.label)) {
           juce::Point<float> position{250.0f, 140.0f};
           if (link != nullptr) {
@@ -775,6 +923,7 @@ void NodeRenderer::handlePropertyCombo(NodeGraph &graph,
     ImGui::BeginChild("PropertyComboList", ImVec2(76.0f, listHeight), false);
     for (int index = 0; index < static_cast<int>(property->choices.size());
          ++index) {
+      ImGui::PushID(index);
       const auto selected = property->value == index;
       if (ImGui::Selectable(
               property->choices[static_cast<std::size_t>(index)].c_str(),
@@ -800,6 +949,7 @@ void NodeRenderer::handlePropertyCombo(NodeGraph &graph,
         ImGui::CloseCurrentPopup();
         activePropertyCombo.active = false;
       }
+      ImGui::PopID();
     }
     ImGui::EndChild();
     ImGui::EndPopup();
@@ -975,7 +1125,7 @@ void NodeRenderer::navigateCanvas(ImVec2 panDelta, float zoomFactor,
   const auto invScale = currentScale > 0.0f ? 1.0f / currentScale : 1.0f;
   view.Translate(ImVec2(panDelta.x * invScale, panDelta.y * invScale));
   commitCanvasView(view);
-  mutatedThisFrame = true;
+  layoutMutatedThisFrame = true;
 }
 
 void NodeRenderer::centreViewOnCanvas(ImVec2 canvasPoint) {
@@ -990,6 +1140,6 @@ void NodeRenderer::centreViewOnCanvas(ImVec2 canvasPoint) {
   focused.Max =
       ImVec2(canvasPoint.x + size.x * 0.5f, canvasPoint.y + size.y * 0.5f);
   commitCanvasView(focused);
-  mutatedThisFrame = true;
+  layoutMutatedThisFrame = true;
 }
 } // namespace auralforge::graph

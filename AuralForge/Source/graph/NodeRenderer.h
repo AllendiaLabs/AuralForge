@@ -17,6 +17,9 @@ namespace auralforge::graph {
 struct NodeRendererCallbacks {
   /** @brief Invoked after a node property is committed. */
   std::function<void(std::int32_t, const std::string &, int)> propertyChanged;
+  /** @brief Invoked after a real property such as Gain is committed. */
+  std::function<void(std::int32_t, const std::string &, float)>
+      floatPropertyChanged;
   /** @brief Invoked to randomize one weighted live node. */
   std::function<void(std::int32_t, std::int32_t)> randomizeNode;
   /** @brief Invoked to freeze the current connected selection. */
@@ -27,8 +30,15 @@ struct NodeRendererCallbacks {
   std::function<void(const std::string &)> showMessage;
   /** @brief Invoked after the persisted graph document changes.
    *  @param recompile True when the audio graph must be rebuilt.
+   *  @param invalidateAnalysis True when open analysis snapshots must refresh.
    */
-  std::function<void(bool)> documentChanged;
+  std::function<void(bool recompile, bool invalidateAnalysis)> documentChanged;
+  /** @brief Invoked when the user opens analysis on a Blue or Gold node. */
+  std::function<void(std::int32_t)> analysisRequested;
+  /** @brief Invoked when Knob Input conditioning changes. */
+  std::function<void(std::int32_t, float)> knobChanged;
+  /** @brief Invoked when XY Trackpad conditioning changes. */
+  std::function<void(std::int32_t, float, float)> xyChanged;
 };
 
 /**
@@ -52,12 +62,37 @@ public:
   void render(NodeGraph &graph, const NodeRendererCallbacks &callbacks,
               float pinchMagnification = 1.0f);
 
+  /** @brief Returns the first selected node identifier, or zero. */
+  [[nodiscard]] std::int32_t getPrimarySelectedNodeId() const noexcept;
+
 private:
   /** @brief Draws the ML Forge-style element palette. */
   void renderPalette(NodeGraph &graph);
   /** @brief Draws one node and its inline controls. */
+  /**
+   * @brief Draws one node and its inline controls.
+   * @param graph Message-thread graph document.
+   * @param node Node being rendered.
+   * @param callbacks Runtime actions owned by the plug-in editor.
+   */
   void renderNode(NodeGraph &graph, GraphNode &node,
                   const NodeRendererCallbacks &callbacks);
+  /**
+   * @brief Draws Knob Input rotary control and numeric readout.
+   * @param graph Message-thread graph document.
+   * @param node Knob Input node.
+   * @param callbacks Runtime actions owned by the plug-in editor.
+   */
+  void renderKnobControl(NodeGraph &graph, GraphNode &node,
+                         const NodeRendererCallbacks &callbacks);
+  /**
+   * @brief Draws XY Trackpad pad control and X/Y readouts.
+   * @param graph Message-thread graph document.
+   * @param node XY Trackpad node.
+   * @param callbacks Runtime actions owned by the plug-in editor.
+   */
+  void renderXyPad(NodeGraph &graph, GraphNode &node,
+                   const NodeRendererCallbacks &callbacks);
   /** @brief Validates interactive cable creation. */
   void handleConnections(NodeGraph &graph,
                          const NodeRendererCallbacks &callbacks);
@@ -120,8 +155,10 @@ private:
   std::string transientMessage;
   /** @brief Dear ImGui time when transient feedback expires. */
   double transientMessageDeadline = 0.0;
-  /** @brief Whether the graph document changed during this frame. */
+  /** @brief Whether graph topology or parameters changed during this frame. */
   bool mutatedThisFrame = false;
+  /** @brief Whether viewport or node layout changed during this frame. */
+  bool layoutMutatedThisFrame = false;
   /** @brief Whether this frame's mutation requires an audio recompile. */
   bool recompileThisFrame = false;
   /** @brief Whether persisted canvas navigation still needs restoring. */

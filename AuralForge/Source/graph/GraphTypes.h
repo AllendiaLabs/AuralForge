@@ -19,11 +19,25 @@ enum class NodeType {
   activation,
   tcn,
   merge,
-  blackBox
+  blackBox,
+  knobInput,
+  xyTrackpad
 };
 
 /** @brief Merge element operating mode. */
 enum class MergeMode : int { add = 0, multiply = 1, concatenate = 2 };
+
+/** @brief Distinguishes tensor audio paths from scalar conditioning paths. */
+enum class SignalKind { audio, conditioning };
+
+/** @brief Per-element analysis plot family requested by the editor. */
+enum class AnalysisView {
+  transfer = 0,
+  frequency = 1,
+  phase = 2,
+  /** @brief Time-domain amplitude waveform (oscilloscope). */
+  oscilloscope = 3
+};
 
 /** @brief Live modular processing node colour. */
 inline const juce::Colour liveBlueColour{100, 180, 255};
@@ -33,10 +47,46 @@ inline const juce::Colour frozenGoldColour{218, 165, 32};
 inline const juce::Colour audioInputColour{70, 200, 150};
 /** @brief Fixed stereo host-output node colour. */
 inline const juce::Colour audioOutputColour{240, 160, 80};
+/** @brief Conditioning source node colour for Knob Input and XY Trackpad. */
+inline const juce::Colour conditioningColour{180, 140, 255};
+
+/** @brief Inclusive lower bound for Knob/XY conditioning scalars. */
+inline constexpr float conditioningMinimum = -10.0f;
+/** @brief Inclusive upper bound for Knob/XY conditioning scalars. */
+inline constexpr float conditioningMaximum = 10.0f;
+/** @brief Inclusive lower bound for Activation/TCN Gain. */
+inline constexpr float gainMinimum = 0.1f;
+/** @brief Inclusive upper bound for Activation/TCN Gain. */
+inline constexpr float gainMaximum = 10.0f;
+/** @brief Neutral Gain value that leaves nonlinearity slope unchanged. */
+inline constexpr float gainDefault = 1.0f;
 
 /** @brief Returns true for the undeletable host audio boundary nodes. */
 inline bool isFixedIoType(NodeType type) noexcept {
   return type == NodeType::audioInput || type == NodeType::audioOutput;
+}
+
+/** @brief Returns true for Knob Input and XY Trackpad source elements. */
+inline bool isConditioningSourceType(NodeType type) noexcept {
+  return type == NodeType::knobInput || type == NodeType::xyTrackpad;
+}
+
+/**
+ * @brief Clamps a Gain value into the supported slope range.
+ * @param gain Proposed Gain.
+ * @return Gain in `[gainMinimum, gainMaximum]`.
+ */
+inline float clampGain(float gain) noexcept {
+  return std::clamp(gain, gainMinimum, gainMaximum);
+}
+
+/**
+ * @brief Clamps a conditioning scalar into the Knob/XY range.
+ * @param value Proposed conditioning value.
+ * @return Value in `[conditioningMinimum, conditioningMaximum]`.
+ */
+inline float clampConditioning(float value) noexcept {
+  return std::clamp(value, conditioningMinimum, conditioningMaximum);
 }
 
 /** @brief Returns true for nodes that combine several input ports. */
@@ -75,10 +125,12 @@ struct Pin {
   PinKind kind = PinKind::input;
   /** @brief Audio shape accepted or produced by the endpoint. */
   ShapeSignature shape;
+  /** @brief Whether this pin carries audio or scalar conditioning. */
+  SignalKind signalKind = SignalKind::audio;
 };
 
 /** @brief Value type accepted by an inline graph property. */
-enum class PropertyKind { integer, choice, readOnly };
+enum class PropertyKind { integer, choice, readOnly, real };
 
 /** @brief Ordered, validated inline property belonging to a graph node. */
 struct NodeProperty {
@@ -96,10 +148,21 @@ struct NodeProperty {
   PropertyKind kind = PropertyKind::integer;
   /** @brief Ordered labels used when the property is a choice. */
   std::vector<std::string> choices;
+  /** @brief Current validated real value used by `PropertyKind::real`. */
+  float floatValue = 0.0f;
+  /** @brief Inclusive minimum accepted real value. */
+  float floatMinimum = 0.0f;
+  /** @brief Inclusive maximum accepted real value. */
+  float floatMaximum = 1.0f;
 
   /** @brief Clamps and stores a proposed integer value. */
   void setValue(int proposed) noexcept {
     value = std::clamp(proposed, minimum, maximum);
+  }
+
+  /** @brief Clamps and stores a proposed real value. */
+  void setFloatValue(float proposed) noexcept {
+    floatValue = std::clamp(proposed, floatMinimum, floatMaximum);
   }
 };
 
@@ -149,6 +212,14 @@ struct GraphNode {
   std::string artifactPath;
   /** @brief Serialized live source fragment used for unfreeze. */
   std::string sourceSubgraph;
+  /** @brief Persisted analysis view preference for this element. */
+  AnalysisView selectedAnalysisView = AnalysisView::transfer;
+  /** @brief Current Knob Input conditioning scalar. */
+  float conditioningValue = 0.0f;
+  /** @brief Current XY Trackpad X conditioning scalar. */
+  float conditioningX = 0.0f;
+  /** @brief Current XY Trackpad Y conditioning scalar. */
+  float conditioningY = 0.0f;
 };
 
 /** @brief Directed connection between two graph pins. */

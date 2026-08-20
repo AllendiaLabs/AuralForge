@@ -4,7 +4,9 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 namespace {
@@ -94,17 +96,23 @@ void AuralForgeAudioProcessorEditor::renderFrame() {
     const auto status = freezeCoordinator.getStatusMessage();
     const auto progress =
         static_cast<float>(std::fmod(ImGui::GetTime() * 0.35, 1.0));
-    ImGui::ProgressBar(progress, ImVec2(110.0f, 0.0f), "");
+    ImGui::ProgressBar(progress, ImVec2(110.0f, 0.0f), "##freeze");
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f), "%s",
                        status.toRawUTF8());
   }
   ImGui::Separator();
 
+  ImGui::BeginChild("GraphArea", ImVec2(-340.0f, 0.0f), false,
+                    ImGuiWindowFlags_NoScrollbar);
   auralforge::graph::NodeRendererCallbacks callbacks;
   callbacks.propertyChanged = [this](std::int32_t nodeId,
                                      const std::string &key, int value) {
     handlePropertyChanged(nodeId, key, value);
+  };
+  callbacks.floatPropertyChanged = [this](std::int32_t nodeId,
+                                          const std::string &key, float value) {
+    handleFloatPropertyChanged(nodeId, key, value);
   };
   callbacks.randomizeNode = [this](std::int32_t nodeId, std::int32_t seed) {
     handleRandomize(nodeId, seed);
@@ -119,8 +127,46 @@ void AuralForgeAudioProcessorEditor::renderFrame() {
   callbacks.showMessage = [this](const std::string &message) {
     showGraphMessage(message);
   };
-  callbacks.documentChanged = [this](bool recompile) { persistGraph(recompile); };
+  callbacks.documentChanged = [this](bool recompile, bool refreshAnalysis) {
+    persistGraph(recompile);
+    if (refreshAnalysis)
+      invalidateAnalysis();
+    else
+      syncAnalysisRevision();
+  };
+  callbacks.analysisRequested = [this](std::int32_t nodeId) {
+    handleAnalysisRequested(nodeId);
+  };
+  callbacks.knobChanged = [this](std::int32_t nodeId, float value) {
+    handleKnobChanged(nodeId, value);
+  };
+  callbacks.xyChanged = [this](std::int32_t nodeId, float x, float y) {
+    handleXyChanged(nodeId, x, y);
+  };
   nodeRenderer.render(nodeGraph, callbacks, imguiHost.takeMagnification());
+  ImGui::EndChild();
+
+  ImGui::SameLine();
+  ImGui::BeginChild("InfoArea", ImVec2(332.0f, 0.0f), true);
+  refreshAnalysisIfNeeded();
+  auralforge::ui::AnalysisPanelState analysisState;
+  analysisState.nodeId = analysisNodeId;
+  if (const auto *node = nodeGraph.findNode(analysisNodeId))
+    analysisState.view = node->selectedAnalysisView;
+  analysisState.snapshot = analysisSnapshot;
+  analysisState.snapshot.isStale =
+      analysisRevision != audioProcessor.getGraphRevision();
+  analysisState.playbackActive = audioProcessor.isTransportPlaying();
+  infoPanel.render(
+      receptiveField, sampleRate, audioProcessor.getModelParameterCount(),
+      runtimeError, analysisState,
+      [this](auralforge::graph::AnalysisView view) {
+        if (analysisNodeId != 0)
+          nodeGraph.setSelectedAnalysisView(analysisNodeId, view);
+        persistGraph(false);
+        invalidateAnalysis();
+      });
+  ImGui::EndChild();
 
   ImGui::End();
 }
@@ -160,6 +206,104 @@ void AuralForgeAudioProcessorEditor::updateGraphIfNeeded() {
 
 void AuralForgeAudioProcessorEditor::persistGraph(bool compileRuntime) {
   audioProcessor.setGraphState(nodeGraph.toValueTree(), compileRuntime);
+  publishRuntimeControls();
+}
+
+void AuralForgeAudioProcessorEditor::publishRuntimeControls() {
+  audioProcessor.setRuntimeControls(
+      auralforge::dsp::collectRuntimeControlState(nodeGraph));
+}
+
+void AuralForgeAudioProcessorEditor::invalidateAnalysis() {
+  analysisRevision = 0;
+}
+
+void AuralForgeAudioProcessorEditor::syncAnalysisRevision() {
+  analysisRevision = audioProcessor.getGraphRevision();
+}
+
+void AuralForgeAudioProcessorEditor::refreshAnalysisIfNeeded() {
+  if (analysisNodeId == 0)
+    return;
+  const auto revision = audioProcessor.getGraphRevision();
+  const auto now = ImGui::GetTime();
+  constexpr double minInterval = 1.0 / 12.0;
+  if (analysisRevision == revision &&
+      analysisSnapshot.nodeId == analysisNodeId &&
+      now - lastAnalysisTime < 0.25)
+    return;
+  if (now - lastAnalysisTime < minInterval)
+    return;
+
+  auralforge::dsp::AnalysisRequest request;
+  request.nodeId = analysisNodeId;
+  if (const auto *node = nodeGraph.findNode(analysisNodeId))
+    request.view = node->selectedAnalysisView;
+  request.revision = revision;
+  request.playbackActive = audioProcessor.isTransportPlaying();
+  request.sampleRate = audioProcessor.getCurrentSampleRate();
+  std::array<std::array<float, 512>, 2> live{};
+  float *planes[2] = {live[0].data(), live[1].data()};
+  int channels = 0;
+  int samples = 0;
+  audioProcessor.copyLiveCapture(request.liveInputPeak, request.liveOutputPeak,
+                                 request.liveInputSuitable, planes, 512,
+                                 channels, samples);
+  std::array<float, 1024> packed{};
+  for (int channel = 0; channel < channels; ++channel)
+    std::memcpy(packed.data() + channel * samples, live[static_cast<std::size_t>(channel)].data(),
+                static_cast<std::size_t>(samples) * sizeof(float));
+  request.liveInputChannels = channels;
+  request.liveInputSamples = samples;
+  request.liveInput = samples > 0 ? packed.data() : nullptr;
+  float tapIn = 0.0f;
+  float tapOut = 0.0f;
+  if (audioProcessor.getAnalysisTapPeaks(analysisNodeId, tapIn, tapOut)) {
+    request.liveInputPeak = tapIn;
+    request.liveOutputPeak = tapOut;
+  }
+
+  auralforge::dsp::LiveGraphCompileOptions options;
+  options.hostInputChannels =
+      std::max(1, audioProcessor.getTotalNumInputChannels());
+  options.hostOutputChannels =
+      std::max(1, audioProcessor.getTotalNumOutputChannels());
+  options.maximumBlockSize = 512;
+  analysisSnapshot = auralforge::dsp::LiveGraphEngine::analyse(
+      nodeGraph, request, options,
+      [this](const auralforge::graph::GraphNode &node) {
+        return audioProcessor.resolveFrozenBlackBoxForAnalysis(node);
+      });
+  analysisSnapshot.isStale = false;
+  analysisRevision = revision;
+  lastAnalysisTime = now;
+}
+
+void AuralForgeAudioProcessorEditor::handleFloatPropertyChanged(
+    std::int32_t nodeId, const std::string &key, float value) {
+  juce::ignoreUnused(nodeId, key, value);
+  persistGraph(false);
+  invalidateAnalysis();
+}
+
+void AuralForgeAudioProcessorEditor::handleAnalysisRequested(
+    std::int32_t nodeId) {
+  analysisNodeId = nodeId;
+  invalidateAnalysis();
+}
+
+void AuralForgeAudioProcessorEditor::handleKnobChanged(std::int32_t nodeId,
+                                                       float value) {
+  juce::ignoreUnused(nodeId, value);
+  persistGraph(false);
+  syncAnalysisRevision();
+}
+
+void AuralForgeAudioProcessorEditor::handleXyChanged(std::int32_t nodeId,
+                                                     float x, float y) {
+  juce::ignoreUnused(nodeId, x, y);
+  persistGraph(false);
+  syncAnalysisRevision();
 }
 
 void AuralForgeAudioProcessorEditor::handlePropertyChanged(
