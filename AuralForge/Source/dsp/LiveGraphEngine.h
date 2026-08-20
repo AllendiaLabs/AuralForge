@@ -30,6 +30,16 @@ struct LiveGraphCompileOptions {
   std::int64_t maximumBlockSize = 512;
   /** @brief Largest per-element causal history accepted during compilation. */
   std::uint64_t maximumHistorySamples = 1048576;
+  /** @brief Host sample rate used to size control-value ramps. */
+  double sampleRate = 44100.0;
+  /**
+   * @brief Linear ramp duration for Gain, Knob Input, and XY Trackpad.
+   *
+   * Longer than the 50 ms `juce::dsp` default so large Knob/XY/Gain jumps
+   * (including multiply-as-gain) settle without zipper noise. Linear
+   * (not multiplicative) smoothing is required because Knob/XY may be 0.
+   */
+  double controlRampSeconds = 0.15;
 };
 
 /**

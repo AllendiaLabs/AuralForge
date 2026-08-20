@@ -269,6 +269,7 @@ void AuralForgeAudioProcessorEditor::refreshAnalysisIfNeeded() {
   options.hostOutputChannels =
       std::max(1, audioProcessor.getTotalNumOutputChannels());
   options.maximumBlockSize = 512;
+  options.sampleRate = std::max(1.0, audioProcessor.getCurrentSampleRate());
   analysisSnapshot = auralforge::dsp::LiveGraphEngine::analyse(
       nodeGraph, request, options,
       [this](const auralforge::graph::GraphNode &node) {

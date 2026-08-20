@@ -617,6 +617,69 @@ int main() {
                      "concatenated XY must scale stereo audio per channel");
   }
 
+  auralforge::graph::NodeGraph rampGraph;
+  const auto rampInput =
+      rampGraph.addNode(auralforge::graph::NodeType::audioInput, {0.0f, 0.0f});
+  const auto rampKnob =
+      rampGraph.addNode(auralforge::graph::NodeType::knobInput, {0.0f, 80.0f});
+  const auto rampActivation = rampGraph.addNode(
+      auralforge::graph::NodeType::activation, {180.0f, -40.0f});
+  const auto rampXy =
+      rampGraph.addNode(auralforge::graph::NodeType::xyTrackpad, {0.0f, 160.0f});
+  const auto rampMerge =
+      rampGraph.addNode(auralforge::graph::NodeType::merge, {360.0f, 20.0f});
+  const auto rampOutput =
+      rampGraph.addNode(auralforge::graph::NodeType::audioOutput, {540.0f, 20.0f});
+  rampGraph.setProperty(rampMerge, "mode", 1);
+  rampGraph.setProperty(rampMerge, "inputs", 3);
+  passed &= expect(
+      rampGraph
+          .connect(rampGraph.findNode(rampInput)->outputs.front().id,
+                   rampGraph.findNode(rampActivation)->inputs.front().id)
+          .accepted &&
+          rampGraph
+              .connect(rampGraph.findNode(rampActivation)->outputs.front().id,
+                       rampGraph.findNode(rampMerge)->inputs[0].id)
+              .accepted &&
+          rampGraph
+              .connect(rampGraph.findNode(rampKnob)->outputs.front().id,
+                       rampGraph.findNode(rampMerge)->inputs[1].id)
+              .accepted &&
+          rampGraph
+              .connect(rampGraph.findNode(rampXy)->outputs[0].id,
+                       rampGraph.findNode(rampMerge)->inputs[2].id)
+              .accepted &&
+          rampGraph
+              .connect(rampGraph.findNode(rampMerge)->outputs.front().id,
+                       rampGraph.findNode(rampOutput)->inputs.front().id)
+              .accepted,
+      "ramp graph must connect Gain, Knob, and XY into multiply");
+  LiveGraphCompileOptions rampOptions = options;
+  rampOptions.sampleRate = 48000.0;
+  rampOptions.controlRampSeconds = 0.001;
+  const auto rampCompiled = LiveGraphEngine::compile(rampGraph, rampOptions);
+  LiveGraphCompileError rampError;
+  const auto rampRuntime =
+      LiveGraphEngine::prepare(rampCompiled.snapshot, rampError);
+  passed &= expect(rampCompiled.succeeded() && rampRuntime != nullptr,
+                   "control-ramp graph must compile and prepare");
+  if (rampRuntime != nullptr) {
+    RuntimeControlState rampControls;
+    rampControls.gainByNodeId[rampActivation] = 2.0f;
+    rampControls.conditioningByNodeId[rampKnob] = {1.0f, 0.0f};
+    rampControls.conditioningByNodeId[rampXy] = {1.0f, 0.0f};
+    rampRuntime->bindControls(
+        std::make_shared<const RuntimeControlState>(rampControls));
+    auto ones = torch::ones({1, 2, 64}, torch::kFloat32);
+    const auto ramped = rampRuntime->processTensor(ones);
+    passed &= expect(
+        ramped.defined() && ramped.size(2) == 64 &&
+            ramped[0][0][0].item<float>() < ramped[0][0][32].item<float>() &&
+            ramped[0][0][32].item<float>() < ramped[0][0][63].item<float>() &&
+            std::abs(ramped[0][0][63].item<float>() - 2.0f) < 1.0e-4f,
+        "Gain, Knob, and XY must linear-ramp across the block to the target");
+  }
+
   if (passed)
     std::cout << "AuralForge live graph engine tests passed\n";
   return passed ? 0 : 1;

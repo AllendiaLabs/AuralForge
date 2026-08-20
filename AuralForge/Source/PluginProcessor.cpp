@@ -773,6 +773,8 @@ void AuralForgeAudioProcessor::requestGraphCompile() {
   options.hostOutputChannels = std::max(1, getTotalNumOutputChannels());
   options.maximumBlockSize = preparedBlockSize.load(std::memory_order_acquire);
   options.maximumHistorySamples = maximumRealtimeHistory;
+  options.sampleRate =
+      std::max(1.0, currentSampleRate.load(std::memory_order_acquire));
   graphPublisher.requestCompile(
       graphState, options, [this](const auralforge::graph::GraphNode &node) {
         return resolveFrozenBlackBox(node);

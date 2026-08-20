@@ -399,6 +399,10 @@ struct LiveGraphSnapshot::Impl {
   std::uint64_t receptiveField = 1;
   /** @brief Total mutable scalar parameters. */
   std::uint64_t parameterCount = 0;
+  /** @brief Host sample rate copied from compile options. */
+  double sampleRate = 44100.0;
+  /** @brief Linear control-ramp duration in seconds. */
+  double controlRampSeconds = 0.15;
 };
 
 /** @brief Mutable implementation backing LiveGraphRuntime. */
@@ -422,6 +426,11 @@ struct LiveGraphRuntime::Impl {
   std::unique_ptr<std::atomic<float>[]> outputPeaks;
   /** @brief Published Gain/conditioning table, or null for compiled defaults. */
   std::shared_ptr<const RuntimeControlState> controls;
+  /** @brief Per-element Gain ramps for Activation and TCN. */
+  std::vector<juce::LinearSmoothedValue<float>> gainSmoothers;
+  /** @brief Per-element Knob/XY ramps; XY stores X in [0] and Y in [1]. */
+  std::vector<std::array<juce::LinearSmoothedValue<float>, 2>>
+      conditioningSmoothers;
 };
 
 /** @brief Constructs a snapshot from validated immutable storage. */
@@ -570,6 +579,40 @@ gatherAllInputs(const std::vector<torch::Tensor> &outputs,
   return inputs;
 }
 
+/**
+ * @brief Writes one channel of linearly smoothed control samples.
+ * @param destination Contiguous destination of length @p samples.
+ * @param samples Number of samples to emit.
+ * @param smoother Audio-thread ramp; target must already be set.
+ */
+void writeSmoothedChannel(float *destination, std::int64_t samples,
+                          juce::LinearSmoothedValue<float> &smoother) {
+  if (destination == nullptr || samples < 1)
+    return;
+  if (!smoother.isSmoothing()) {
+    std::fill_n(destination, static_cast<std::size_t>(samples),
+                smoother.getCurrentValue());
+    return;
+  }
+  for (std::int64_t index = 0; index < samples; ++index)
+    destination[index] = smoother.getNextValue();
+}
+
+/**
+ * @brief Builds a [1, 1, T] linear Gain envelope, advancing the smoother.
+ * @param smoother Audio-thread Gain ramp; target must already be set.
+ * @param samples Envelope length.
+ * @param options Tensor options matching the audio block.
+ * @return Broadcastable Gain trajectory.
+ */
+torch::Tensor makeGainEnvelope(juce::LinearSmoothedValue<float> &smoother,
+                               std::int64_t samples,
+                               torch::TensorOptions options) {
+  auto envelope = torch::empty({1, 1, samples}, options);
+  writeSmoothedChannel(envelope.data_ptr<float>(), samples, smoother);
+  return envelope;
+}
+
 torch::Tensor executeMerge(const CompiledElement &element,
                            const std::vector<torch::Tensor> &inputs,
                            std::int64_t samples, torch::TensorOptions options) {
@@ -614,14 +657,22 @@ void LiveGraphRuntime::executeElement(std::size_t index,
   }
   if (element.type == auralforge::graph::NodeType::knobInput) {
     const auto values = resolveConditioning(element, controls);
-    output = torch::full({1, 1, samples}, values[0], blockInput.options());
+    auto &smoother = runtime.conditioningSmoothers[index][0];
+    smoother.setTargetValue(values[0]);
+    output = torch::empty({1, 1, samples}, blockInput.options());
+    writeSmoothedChannel(output.data_ptr<float>(), samples, smoother);
     return;
   }
   if (element.type == auralforge::graph::NodeType::xyTrackpad) {
     const auto values = resolveConditioning(element, controls);
+    auto &xSmoother = runtime.conditioningSmoothers[index][0];
+    auto &ySmoother = runtime.conditioningSmoothers[index][1];
+    xSmoother.setTargetValue(values[0]);
+    ySmoother.setTargetValue(values[1]);
     output = torch::empty({1, 2, samples}, blockInput.options());
-    output[0][0].fill_(values[0]);
-    output[0][1].fill_(values[1]);
+    auto *data = output.data_ptr<float>();
+    writeSmoothedChannel(data, samples, xSmoother);
+    writeSmoothedChannel(data + samples, samples, ySmoother);
     return;
   }
   if (element.inputIndices.empty()) {
@@ -651,17 +702,28 @@ void LiveGraphRuntime::executeElement(std::size_t index,
     output = convolve(extended, element.weights.front(), element.dilation);
     break;
   }
-  case auralforge::graph::NodeType::activation:
-    output = applyActivation(upstream, element.activation,
-                             resolveGain(element, controls));
+  case auralforge::graph::NodeType::activation: {
+    auto &smoother = runtime.gainSmoothers[index];
+    smoother.setTargetValue(resolveGain(element, controls));
+    if (!smoother.isSmoothing()) {
+      output = applyActivation(upstream, element.activation,
+                               smoother.getCurrentValue());
+    } else {
+      output = applyActivation(upstream * makeGainEnvelope(smoother, samples,
+                                                           blockInput.options()),
+                               element.activation, 1.0f);
+    }
     break;
+  }
   case auralforge::graph::NodeType::tcn: {
     const auto historyLength =
         static_cast<std::int64_t>(element.receptiveField - 1);
     auto value =
         extendCausalInput(upstream, runtime.histories[index], historyLength);
     value = project(value, element.weights.front());
-    const auto gain = resolveGain(element, controls);
+    auto &smoother = runtime.gainSmoothers[index];
+    smoother.setTargetValue(resolveGain(element, controls));
+    const auto gain = smoother.getCurrentValue();
     for (int layer = 0; layer < element.depth; ++layer) {
       const auto layerDilation =
           static_cast<std::int64_t>(element.dilation) << layer;
@@ -678,6 +740,7 @@ void LiveGraphRuntime::executeElement(std::size_t index,
     }
     value = project(value, element.weights.back());
     output = value.narrow(2, value.size(2) - samples, samples);
+    smoother.skip(static_cast<int>(samples));
     break;
   }
   case auralforge::graph::NodeType::merge:
@@ -868,9 +931,11 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
 
   if ((options.hostInputChannels != 1 && options.hostInputChannels != 2) ||
       (options.hostOutputChannels != 1 && options.hostOutputChannels != 2) ||
-      options.maximumBlockSize < 1 || options.maximumHistorySamples < 1)
+      options.maximumBlockSize < 1 || options.maximumHistorySamples < 1 ||
+      options.sampleRate <= 0.0 || options.controlRampSeconds < 0.0)
     return failure(LiveGraphErrorCode::invalidCompileOptions, 0,
-                   "Live graph supports mono/stereo hosts and positive blocks");
+                   "Live graph supports mono/stereo hosts, positive blocks, "
+                   "and a non-negative control ramp");
 
   const auto &nodes = graphDocument.getNodes();
   const auto &links = graphDocument.getLinks();
@@ -1077,6 +1142,8 @@ LiveGraphEngine::compile(const graph::NodeGraph &graphDocument,
     compiled->inputChannels = options.hostInputChannels;
     compiled->outputChannels = options.hostOutputChannels;
     compiled->maximumBlockSize = options.maximumBlockSize;
+    compiled->sampleRate = options.sampleRate;
+    compiled->controlRampSeconds = options.controlRampSeconds;
     compiled->elements.reserve(nodes.size());
     compiled->statistics.reserve(nodes.size());
 
@@ -1414,11 +1481,26 @@ LiveGraphEngine::prepare(std::shared_ptr<const LiveGraphSnapshot> snapshot,
         std::make_unique<std::atomic<float>[]>(compiled.elements.size());
     runtime->outputPeaks =
         std::make_unique<std::atomic<float>[]>(compiled.elements.size());
+    runtime->gainSmoothers.resize(compiled.elements.size());
+    runtime->conditioningSmoothers.resize(compiled.elements.size());
     for (std::size_t index = 0; index < compiled.elements.size(); ++index) {
       runtime->inferenceMilliseconds[index].store(0.0,
                                                   std::memory_order_relaxed);
       runtime->inputPeaks[index].store(0.0f, std::memory_order_relaxed);
       runtime->outputPeaks[index].store(0.0f, std::memory_order_relaxed);
+      const auto &element = compiled.elements[index];
+      auto &gain = runtime->gainSmoothers[index];
+      gain.reset(compiled.sampleRate, compiled.controlRampSeconds);
+      gain.setCurrentAndTargetValue(element.gain);
+      auto &x = runtime->conditioningSmoothers[index][0];
+      auto &y = runtime->conditioningSmoothers[index][1];
+      x.reset(compiled.sampleRate, compiled.controlRampSeconds);
+      y.reset(compiled.sampleRate, compiled.controlRampSeconds);
+      const auto initialX =
+          element.type == graph::NodeType::knobInput ? element.conditioningValue
+                                                     : element.conditioningX;
+      x.setCurrentAndTargetValue(initialX);
+      y.setCurrentAndTargetValue(element.conditioningY);
     }
     runtime->hostInput = torch::empty(
         {1, compiled.inputChannels, compiled.maximumBlockSize},
